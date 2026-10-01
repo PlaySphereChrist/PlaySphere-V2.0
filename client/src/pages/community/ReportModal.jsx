@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { api } from '../../lib/api';
+import { reportCommunityContent } from '../../features/communities/api';
 import ErrorMessage from '../../components/ErrorMessage';
 import Spinner from '../../components/Spinner';
 
@@ -21,7 +21,7 @@ export default function ReportModal({ postId, commentId, onClose, onSuccess }) {
       if (postId) payload.postId = postId;
       if (commentId) payload.commentId = commentId;
 
-      const res = await api.request('POST', '/community/reports', payload);
+      const res = await reportCommunityContent(payload);
 
       if (res.success) {
         onSuccess();

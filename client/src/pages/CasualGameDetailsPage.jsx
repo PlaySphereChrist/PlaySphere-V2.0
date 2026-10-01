@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { api } from '../lib/api';
+import {
+  cancelCasualGame,
+  getCasualGame,
+  joinCasualGame,
+  leaveCasualGame,
+} from '../features/casual-games/api';
 import { useAuth } from '../store/AuthContext';
 import {
   PsButton,
@@ -24,7 +29,7 @@ export default function CasualGameDetailsPage() {
     const fetchGame = async () => {
       try {
         setLoading(true);
-        const res = await api.get(`/casual-games/${gameId}`);
+        const res = await getCasualGame(gameId);
         setGame(res.data.game);
         setError('');
       } catch (err) {
@@ -39,7 +44,7 @@ export default function CasualGameDetailsPage() {
   const handleJoin = async () => {
     try {
       setActionLoading(true);
-      await api.post(`/casual-games/${gameId}/join`);
+      await joinCasualGame(gameId);
       window.location.reload();
     } catch (err) {
       window.alert(err.data?.error || err.message || 'Failed to join game');
@@ -52,7 +57,7 @@ export default function CasualGameDetailsPage() {
     if (!window.confirm('Are you sure you want to leave this game?')) return;
     try {
       setActionLoading(true);
-      await api.post(`/casual-games/${gameId}/leave`);
+      await leaveCasualGame(gameId);
       window.location.reload();
     } catch (err) {
       window.alert(err.data?.error || err.message || 'Failed to leave game');
@@ -65,7 +70,7 @@ export default function CasualGameDetailsPage() {
     if (!window.confirm('Are you sure you want to cancel this game? This cannot be undone.')) return;
     try {
       setActionLoading(true);
-      await api.post(`/casual-games/${gameId}/cancel`);
+      await cancelCasualGame(gameId);
       window.location.reload();
     } catch (err) {
       window.alert(err.data?.error || err.message || 'Failed to cancel game');
@@ -128,9 +133,21 @@ export default function CasualGameDetailsPage() {
           </div>
           <div>
             <p className="text-sm font-medium text-secondary">Location</p>
-            <p className="mt-1 text-sm text-primary">
-              {game.location_name}
-            </p>
+            {game.ground_id ? (
+              <div className="mt-1">
+                <Link
+                  to={`/grounds/${game.ground_id}`}
+                  className="font-bold text-maroon hover:underline flex items-center gap-1.5"
+                >
+                  <span>🏟️</span> {game.ground_name}
+                </Link>
+                <p className="text-xs text-secondary mt-0.5">{game.location_name}</p>
+              </div>
+            ) : (
+              <p className="mt-1 text-sm text-primary">
+                {game.location_name}
+              </p>
+            )}
           </div>
           <div>
             <p className="text-sm font-medium text-secondary">Skill Level</p>
@@ -144,6 +161,16 @@ export default function CasualGameDetailsPage() {
               {game.current_participants} / {game.max_participants} ({(game.max_participants - game.current_participants)} slots available)
             </p>
           </div>
+          {isCreator && game.ground_booking_id && (
+            <div className="sm:col-span-2 p-3 bg-maroon/5 border border-maroon/20 rounded-xl text-xs flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+              <span className="text-secondary">
+                Linked Ground Reservation: <strong className="text-primary">{game.ground_name || game.ground_booking_id}</strong>
+              </span>
+              <Link to={`/bookings/${game.ground_booking_id}`} className="text-maroon font-semibold hover:underline">
+                View Ground Booking Details &rarr;
+              </Link>
+            </div>
+          )}
           {game.description && (
             <div className="sm:col-span-2">
               <p className="text-sm font-medium text-secondary">Description</p>
@@ -182,7 +209,13 @@ export default function CasualGameDetailsPage() {
             </PsButton>
           )}
           
-          {!isCreator && !isParticipant && game.status === 'open' && (
+          {!user && game.status === 'open' && (
+            <Link to="/login" state={{ from: `/casual-games/${game.id}` }}>
+              <PsButton>Sign in to join</PsButton>
+            </Link>
+          )}
+
+          {user && !isCreator && !isParticipant && game.status === 'open' && (
             <PsButton
               onClick={handleJoin}
               disabled={actionLoading}
@@ -212,7 +245,7 @@ export default function CasualGameDetailsPage() {
                 </div>
                 <div className="ml-4">
                   <div className="text-sm font-bold text-primary">
-                    {participant.user_name} {participant.user_id === game.organized_by_user_id && <span className="font-normal text-secondary ml-1">(Organizer)</span>}
+                    {participant.user_name} {(participant.is_organizer || participant.user_id === game.organized_by_user_id) && <span className="font-normal text-secondary ml-1">(Organizer)</span>}
                   </div>
                   {participant.player_skill_level && (
                     <div className="text-xs text-secondary capitalize mt-0.5">{participant.player_skill_level}</div>

@@ -1,4 +1,6 @@
 const { pool, query } = require('../../config/database');
+const { GROUND_TIME_ZONE, toGroundInstant } = require('../../utils/ground-time');
+const expiredRecordsCleanup = require('../../services/expired-records-cleanup.service');
 
 class GroundsService {
 
@@ -37,7 +39,7 @@ class GroundsService {
   /**
    * List all grounds (admin sees all; public sees only active).
    */
-  async listGrounds({ activeOnly = true, sport_id } = {}) {
+  async listGrounds({ activeOnly = true, sport_id, location } = {}) {
     const params = [];
     const conditions = [];
 
@@ -55,10 +57,27 @@ class GroundsService {
                  'surface_type', gs.surface_type, 'capacity', gs.capacity
                )) FILTER (WHERE s.id IS NOT NULL),
                '[]'
-             ) AS sports
+             ) AS sports,
+             availability.upcoming_slot_count,
+             availability.starting_price,
+             availability.next_slot_date,
+             availability.next_slot_start_time,
+             availability.next_slot_price
       FROM grounds g
       LEFT JOIN ground_sports gs ON gs.ground_id = g.id
       LEFT JOIN sports s ON s.id = gs.sport_id
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*)::int AS upcoming_slot_count,
+          MIN(slot.price) AS starting_price,
+          (ARRAY_AGG(slot.slot_date ORDER BY slot.slot_date, slot.start_time))[1] AS next_slot_date,
+          (ARRAY_AGG(slot.start_time ORDER BY slot.slot_date, slot.start_time))[1] AS next_slot_start_time,
+          (ARRAY_AGG(slot.price ORDER BY slot.slot_date, slot.start_time))[1] AS next_slot_price
+        FROM ground_booking_slots slot
+        WHERE slot.ground_id = g.id
+          AND slot.is_available = true
+          AND ((slot.slot_date + slot.start_time) AT TIME ZONE '${GROUND_TIME_ZONE}') > NOW()
+      ) availability ON true
     `;
 
     if (sport_id) {
@@ -67,11 +86,24 @@ class GroundsService {
       params.push(sport_id);
     }
 
+    if (location?.trim()) {
+      const locationPattern = `%${location.trim()}%`;
+      const locationParam = params.length + 1;
+      conditions.push(`(g.city ILIKE $${locationParam} OR g.state ILIKE $${locationParam} OR g.address ILIKE $${locationParam})`);
+      params.push(locationPattern);
+    }
+
     if (conditions.length > 0) {
       sql += ` WHERE ` + conditions.join(' AND ');
     }
 
-    sql += ` GROUP BY g.id ORDER BY g.name ASC`;
+    sql += ` GROUP BY g.id,
+             availability.upcoming_slot_count,
+             availability.starting_price,
+             availability.next_slot_date,
+             availability.next_slot_start_time,
+             availability.next_slot_price
+             ORDER BY g.name ASC`;
 
     const { rows } = await query(sql, params);
     return rows;
@@ -346,6 +378,7 @@ class GroundsService {
     }
     if (available_only) {
       conditions.push(`gbs.is_available = true`);
+      conditions.push(`((gbs.slot_date + gbs.start_time) AT TIME ZONE '${GROUND_TIME_ZONE}') > NOW()`);
     }
 
     const { rows } = await query(
@@ -377,6 +410,7 @@ class GroundsService {
          RETURNING id, ground_id, sport_id, slot_date, start_time, end_time, price, is_available, created_at`,
         [groundId, sport_id || null, slot_date, start_time, end_time, price]
       );
+      expiredRecordsCleanup.wake();
       return rows[0];
     } catch (err) {
       if (err.code === '23505') throw this._conflict('A slot already exists for this ground/date/time range');
@@ -409,6 +443,7 @@ class GroundsService {
       values
     );
     if (rows.length === 0) throw this._notFound('Booking slot not found');
+    expiredRecordsCleanup.wake();
     return rows[0];
   }
 
@@ -424,6 +459,7 @@ class GroundsService {
 
     const { rowCount } = await query('DELETE FROM ground_booking_slots WHERE id = $1', [slotId]);
     if (rowCount === 0) throw this._notFound('Booking slot not found');
+    expiredRecordsCleanup.wake();
   }
 
   // ===========================================================================
@@ -442,7 +478,8 @@ class GroundsService {
       // 1. Lock the slot row to prevent race conditions
       const slotRes = await client.query(
         `SELECT gbs.id, gbs.ground_id, gbs.slot_date, gbs.start_time, gbs.end_time,
-                gbs.price, gbs.is_available, g.is_active as ground_active
+                gbs.price, gbs.is_available, g.is_active as ground_active,
+                ((gbs.slot_date + gbs.start_time) AT TIME ZONE '${GROUND_TIME_ZONE}') > NOW() AS is_future
          FROM ground_booking_slots gbs
          JOIN grounds g ON g.id = gbs.ground_id
          WHERE gbs.id = $1 AND gbs.ground_id = $2
@@ -461,6 +498,9 @@ class GroundsService {
       }
       if (!slot.is_available) {
         throw this._conflict('This slot is already booked or unavailable');
+      }
+      if (!slot.is_future) {
+        throw this._badRequest('Ground booking slots must be in the future');
       }
 
       // 2. Server-side pricing — client cannot override
@@ -500,6 +540,7 @@ class GroundsService {
       );
 
       await client.query('COMMIT');
+      expiredRecordsCleanup.wake();
 
       const createdBooking = bookingRes.rows[0];
 
@@ -541,8 +582,10 @@ class GroundsService {
               g.id as ground_id, g.name as ground_name, g.address as ground_address,
               g.city as ground_city,
               gbs.slot_date, gbs.start_time, gbs.end_time,
-              s.name as sport_name,
-              p.id as payment_id, p.status as payment_status, p.payment_type
+              s.id as sport_id, s.name as sport_name,
+              p.id as payment_id, p.status as payment_status, p.payment_type,
+              (SELECT COUNT(*) FROM casual_games cg WHERE cg.ground_booking_id = gb.id AND cg.status NOT IN ('cancelled'))::int as casual_games_count,
+              (SELECT id FROM casual_games cg WHERE cg.ground_booking_id = gb.id AND cg.status NOT IN ('cancelled') LIMIT 1) as casual_game_id
        FROM ground_bookings gb
        JOIN grounds g ON g.id = gb.ground_id
        JOIN ground_booking_slots gbs ON gbs.id = gb.slot_id
@@ -563,9 +606,11 @@ class GroundsService {
               gb.cancelled_at, gb.cancellation_reason, gb.created_at,
               g.name as ground_name, g.address as ground_address, g.city as ground_city,
               gbs.slot_date, gbs.start_time, gbs.end_time,
-              s.name as sport_name,
+              s.id as sport_id, s.name as sport_name,
               p.id as payment_id, p.status as payment_status,
-              p.payment_type, p.razorpay_order_id
+              p.payment_type, p.razorpay_order_id,
+              (SELECT COUNT(*) FROM casual_games cg WHERE cg.ground_booking_id = gb.id AND cg.status NOT IN ('cancelled'))::int as casual_games_count,
+              (SELECT id FROM casual_games cg WHERE cg.ground_booking_id = gb.id AND cg.status NOT IN ('cancelled') LIMIT 1) as casual_game_id
        FROM ground_bookings gb
        JOIN grounds g ON g.id = gb.ground_id
        JOIN ground_booking_slots gbs ON gbs.id = gb.slot_id
@@ -621,11 +666,11 @@ class GroundsService {
       }
 
       // Apply 2-hour rule
-      let slotDateStr = booking.slot_date;
-      if (booking.slot_date instanceof Date) {
-        slotDateStr = booking.slot_date.toISOString().split('T')[0];
-      }
-      const bookingStart = new Date(`${slotDateStr}T${booking.start_time}`);
+      const slotDateStr = booking.slot_date instanceof Date
+        ? booking.slot_date.toISOString().slice(0, 10)
+        : String(booking.slot_date).split('T')[0];
+      const bookingStart = toGroundInstant(booking.slot_date, booking.start_time);
+      if (!bookingStart) throw this._badRequest('Booking has an invalid date/time');
       const now = new Date();
       const diffMs = bookingStart - now;
       const diffHours = diffMs / (1000 * 60 * 60);
@@ -644,6 +689,14 @@ class GroundsService {
       await client.query(
         `UPDATE ground_booking_slots SET is_available = true WHERE id = $1`,
         [booking.slot_id]
+      );
+
+      // Automatically cancel any linked active casual games
+      await client.query(
+        `UPDATE casual_games
+         SET status = 'cancelled', updated_at = NOW()
+         WHERE ground_booking_id = $1 AND status IN ('open', 'full')`,
+        [bookingId]
       );
 
       // Create refund record if advance is refundable

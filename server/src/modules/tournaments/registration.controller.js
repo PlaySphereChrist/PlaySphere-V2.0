@@ -35,6 +35,14 @@ class RegistrationController {
     const entry = await registrationService.getMyWaitlistEntry(req.params.tournamentId, req.user);
     res.json({ success: true, data: { waitlist_entry: entry } });
   }
+
+  async cancelMyWaitlistEntry(req, res) {
+    const result = await registrationService.cancelMyWaitlistEntry(
+      req.params.tournamentId,
+      req.user
+    );
+    res.json({ success: true, data: result });
+  }
 }
 
 module.exports = new RegistrationController();

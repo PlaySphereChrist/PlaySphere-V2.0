@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { api } from '../lib/api';
+import { getCurrentUser, loginUser, logoutUser } from '../features/auth/api';
 
 const AuthContext = createContext(null);
 
@@ -18,7 +18,7 @@ export const AuthProvider = ({ children }) => {
       const token = localStorage.getItem('accessToken');
       if (!token) { setLoading(false); return; }
 
-      const res = await api.get('/auth/me');
+      const res = await getCurrentUser();
       if (res.success && res.data.user) {
         setUser(res.data.user);
       } else {
@@ -43,7 +43,7 @@ export const AuthProvider = ({ children }) => {
   }, [clearAuth]);
 
   const login = async (email, password) => {
-    const res = await api.post('/auth/login', { email, password });
+    const res = await loginUser({ email, password });
     if (res.success) {
       localStorage.setItem('accessToken', res.data.accessToken);
       localStorage.setItem('refreshToken', res.data.refreshToken);
@@ -56,7 +56,7 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       const refreshToken = localStorage.getItem('refreshToken');
-      if (refreshToken) await api.post('/auth/logout', { refreshToken });
+      if (refreshToken) await logoutUser(refreshToken);
     } catch {
       // swallow
     } finally {

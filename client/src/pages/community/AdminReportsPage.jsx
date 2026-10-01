@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../../lib/api';
+import { listCommunityReports, updateCommunityReport } from '../../features/communities/api';
 import { PsCard, PsButton, PsBadge, PsSelect, PsInput, PsPageHeader, PsLoading, PsAlert, PsEmpty } from '../../components/ui';
 
 export default function AdminReportsPage() {
@@ -14,8 +14,7 @@ export default function AdminReportsPage() {
   const fetchReports = async () => {
     setLoading(true);
     try {
-      const url = statusFilter ? `/community/reports?status=${statusFilter}` : '/community/reports';
-      const res = await api.request('GET', url);
+      const res = await listCommunityReports(statusFilter);
       if (res.success) {
         setReports(res.reports || []);
       } else {
@@ -36,7 +35,7 @@ export default function AdminReportsPage() {
   const handleUpdate = async (e, reportId) => {
     e.preventDefault();
     try {
-      const res = await api.request('PATCH', `/community/reports/${reportId}`, {
+      const res = await updateCommunityReport(reportId, {
         status: newStatus,
         moderationAction: modAction || null
       });

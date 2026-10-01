@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './store/AuthContext';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -33,6 +33,7 @@ import AdminReportsPage from './pages/community/AdminReportsPage';
 
 export default function App() {
   const { user, loading } = useAuth();
+  const location = useLocation();
 
   if (loading) return null;
 
@@ -43,25 +44,33 @@ export default function App() {
       <Route path="/signup" element={<SignupPage />} />
       <Route
         path="/login"
-        element={user ? <Navigate to="/tournaments" replace /> : <LoginPage />}
+        element={user ? <Navigate to={location.state?.from || '/tournaments'} replace /> : <LoginPage />}
       />
+
+      {/* Public tournament discovery and records */}
+      <Route element={<Layout />}>
+        <Route path="/tournaments" element={<TournamentsPage />} />
+        <Route path="/tournaments/:tournamentId" element={<TournamentDetailsPage />} />
+        <Route path="/tournaments/:tournamentId/matches" element={<TournamentMatchesPage />} />
+        <Route path="/tournaments/:tournamentId/matches/:matchId" element={<MatchDetailsPage />} />
+        <Route path="/sports" element={<SportsPage />} />
+        <Route path="/teams" element={<TeamsPage />} />
+        <Route path="/teams/:teamId" element={<TeamDetailsPage />} />
+        <Route path="/grounds" element={<GroundsPage />} />
+        <Route path="/grounds/:groundId" element={<GroundDetailsPage />} />
+        <Route path="/casual-games" element={<CasualGamesPage />} />
+        <Route path="/casual-games/:gameId" element={<CasualGameDetailsPage />} />
+        <Route path="/community" element={<CommunityPage />} />
+      </Route>
 
       {/* Protected Routes */}
       <Route element={<ProtectedRoute />}>
         <Route element={<Layout />}>
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/player-profile" element={<PlayerProfilePage />} />
-          <Route path="/community" element={<CommunityPage />} />
-          <Route path="/sports" element={<SportsPage />} />
-          <Route path="/teams" element={<TeamsPage />} />
-          <Route path="/teams/:teamId" element={<TeamDetailsPage />} />
-          <Route path="/grounds" element={<GroundsPage />} />
-          <Route path="/grounds/:groundId" element={<GroundDetailsPage />} />
           <Route path="/bookings" element={<MyBookingsPage />} />
           <Route path="/bookings/:bookingId" element={<BookingDetailsPage />} />
-          <Route path="/casual-games" element={<CasualGamesPage />} />
           <Route path="/casual-games/create" element={<CasualGameForm />} />
-          <Route path="/casual-games/:gameId" element={<CasualGameDetailsPage />} />
           <Route path="/casual-games/:gameId/edit" element={<CasualGameForm />} />
           <Route path="/admin/grounds" element={<AdminGroundsPage />} />
           <Route path="/admin/grounds/:groundId" element={<AdminGroundDetailsPage />} />
@@ -69,11 +78,7 @@ export default function App() {
             user?.roles?.includes('ADMIN') ? <AdminReportsPage /> : <Navigate to="/community" replace />
           } />
 
-          {/* Tournament Routes */}
-          <Route path="/tournaments" element={<TournamentsPage />} />
-          <Route path="/tournaments/:tournamentId" element={<TournamentDetailsPage />} />
-          <Route path="/tournaments/:tournamentId/matches" element={<TournamentMatchesPage />} />
-          <Route path="/tournaments/:tournamentId/matches/:matchId" element={<MatchDetailsPage />} />
+          {/* Authenticated tournament actions */}
           <Route path="/my-registrations" element={<MyRegistrationsPage />} />
 
           <Route path="/organizer/tournaments" element={

@@ -1,5 +1,9 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const env = require('./env');
+
+// Keep PostgreSQL DATE values as calendar strings. Parsing them as JS Date
+// objects makes JSON serialization shift the day in UTC-offset time zones.
+types.setTypeParser(1082, value => value);
 
 const poolConfig = env.DATABASE_URL 
   ? { connectionString: env.DATABASE_URL }

@@ -78,7 +78,7 @@ PlaySphere/
 # 1. Clone and enter the project
 cd PlaySphere
 
-# 2. Copy and fill in environment variables
+# 2. Copy and fill in environment variables (the server reads the project-root .env)
 cp .env.example .env
 
 # 3. Install server dependencies
@@ -87,8 +87,8 @@ cd server && npm install
 # 4. Install client dependencies
 cd ../client && npm install
 
-# 5. Create the database
-# (see docs/database.md)
+# 5. Create the database and apply the schema/seeds
+# (see docs/database.md for the overview and database/README.md for commands)
 
 # 6. Start the backend
 cd ../server && npm run dev

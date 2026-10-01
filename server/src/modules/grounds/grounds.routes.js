@@ -6,12 +6,12 @@ const ctrl = require('./grounds.controller');
 
 // ---------------------------------------------------------------------------
 // PUBLIC / AUTHENTICATED — Ground discovery
-// All authenticated users can view grounds and slots
+// Ground discovery, availability, and slots are public; personal bookings remain protected.
 // ---------------------------------------------------------------------------
-router.get('/', authenticate, asyncHandler(ctrl.listGroundsPublic));
-router.get('/:groundId', authenticate, asyncHandler(ctrl.getGround));
-router.get('/:groundId/availability', authenticate, asyncHandler(ctrl.listAvailability));
-router.get('/:groundId/slots', authenticate, asyncHandler(ctrl.listSlots));
+router.get('/', asyncHandler(ctrl.listGroundsPublic));
+router.get('/:groundId', asyncHandler(ctrl.getGround));
+router.get('/:groundId/availability', asyncHandler(ctrl.listAvailability));
+router.get('/:groundId/slots', asyncHandler(ctrl.listSlots));
 
 // ---------------------------------------------------------------------------
 // USER — Bookings (place and manage own bookings)

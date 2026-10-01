@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../lib/api';
+import { getMyBookings } from '../features/bookings/api';
+import { formatDate } from '../utils/dateTime';
 import {
   PsButton,
   PsCard,
@@ -19,7 +20,7 @@ export default function MyBookingsPage() {
   useEffect(() => {
     async function fetchBookings() {
       try {
-        const res = await api.get('/ground-bookings/me');
+        const res = await getMyBookings();
         setBookings(res.data.bookings || []);
       } catch (err) {
         setError(err.message || 'Failed to fetch bookings');
@@ -85,7 +86,7 @@ export default function MyBookingsPage() {
                     <div className="flex flex-col gap-1 text-sm text-secondary">
                       <p className="flex items-center gap-1.5">
                         <span className="text-muted">📅</span>
-                        {new Date(dStr).toLocaleDateString()} &bull; {booking.start_time.slice(0,5)} - {booking.end_time.slice(0,5)}
+                        {formatDate(dStr)} &bull; {booking.start_time.slice(0,5)} - {booking.end_time.slice(0,5)}
                       </p>
                       {booking.sport_name && (
                         <p className="flex items-center gap-1.5 text-xs">
@@ -94,8 +95,15 @@ export default function MyBookingsPage() {
                         </p>
                       )}
                     </div>
-                    <div className="mt-2 flex items-center text-sm font-semibold text-primary sm:mt-0">
-                      Total: ₹{booking.total_price}
+                    <div className="mt-2 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 sm:mt-0">
+                      {booking.casual_games_count > 0 && (
+                        <span className="text-xs font-medium text-maroon bg-maroon/10 border border-maroon/20 px-2.5 py-1 rounded-full">
+                          🎮 Game Hosted
+                        </span>
+                      )}
+                      <span className="text-sm font-semibold text-primary">
+                        Total: ₹{booking.total_price}
+                      </span>
                     </div>
                   </div>
                 </Link>

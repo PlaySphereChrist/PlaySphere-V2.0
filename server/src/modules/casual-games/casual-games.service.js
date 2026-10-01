@@ -1,4 +1,6 @@
 const { query, pool } = require('../../config/database');
+const { GROUND_TIME_ZONE, toGroundInstant } = require('../../utils/ground-time');
+const expiredRecordsCleanup = require('../../services/expired-records-cleanup.service');
 
 class CasualGamesService {
   _badRequest(msg) {
@@ -32,11 +34,16 @@ class CasualGamesService {
     let sql = `
       SELECT cg.*, 
              s.name as sport_name,
+             g.name as ground_name,
+             g.address as ground_address,
+             g.city as ground_city,
              u.id as creator_id,
-             COALESCE(pp.display_name, split_part(u.email, '@', 1)) as creator_name,
+             CASE WHEN pp.is_public THEN pp.display_name ELSE 'Community organizer' END AS creator_name,
+             COALESCE(pp.is_public, false) AS creator_profile_public,
              (SELECT COUNT(*) FROM casual_game_participants WHERE casual_game_id = cg.id AND status = 'joined')::int as current_participants
       FROM casual_games cg
       JOIN sports s ON cg.sport_id = s.id
+      LEFT JOIN grounds g ON cg.ground_id = g.id
       JOIN users u ON cg.organized_by_user_id = u.id
       LEFT JOIN player_profiles pp ON u.id = pp.user_id
       WHERE 1=1
@@ -62,7 +69,15 @@ class CasualGamesService {
 
     if (filters.date) {
       params.push(filters.date);
-      sql += ` AND DATE(cg.scheduled_at AT TIME ZONE 'UTC') = $${params.length}`;
+      sql += ` AND DATE(cg.scheduled_at AT TIME ZONE '${GROUND_TIME_ZONE}') = $${params.length}`;
+    }
+
+    if (filters.upcomingOnly) {
+      sql += ` AND cg.scheduled_at >= NOW()`;
+    }
+
+    if (filters.publicOnly) {
+      sql += ` AND cg.is_private = false`;
     }
 
     sql += ` ORDER BY cg.scheduled_at ASC`;
@@ -78,11 +93,16 @@ class CasualGamesService {
     const res = await query(`
       SELECT cg.*, 
              s.name as sport_name,
+             g.name as ground_name,
+             g.address as ground_address,
+             g.city as ground_city,
              u.id as creator_id,
-             COALESCE(pp.display_name, split_part(u.email, '@', 1)) as creator_name,
+             CASE WHEN pp.is_public THEN pp.display_name ELSE 'Community organizer' END AS creator_name,
+             COALESCE(pp.is_public, false) AS creator_profile_public,
              (SELECT COUNT(*) FROM casual_game_participants WHERE casual_game_id = cg.id AND status = 'joined')::int as current_participants
       FROM casual_games cg
       JOIN sports s ON cg.sport_id = s.id
+      LEFT JOIN grounds g ON cg.ground_id = g.id
       JOIN users u ON cg.organized_by_user_id = u.id
       LEFT JOIN player_profiles pp ON u.id = pp.user_id
       WHERE cg.id = $1
@@ -96,8 +116,9 @@ class CasualGamesService {
              p.user_id,
              p.joined_at,
              p.status,
-             COALESCE(pp.display_name, split_part(u.email, '@', 1)) as user_name,
-             pp.avatar_url,
+             CASE WHEN pp.is_public THEN pp.display_name ELSE 'Private player' END AS user_name,
+             CASE WHEN pp.is_public THEN pp.avatar_url ELSE NULL END AS avatar_url,
+             (p.user_id = $3) AS is_organizer,
              psp.skill_level as player_skill_level
       FROM casual_game_participants p
       JOIN users u ON p.user_id = u.id
@@ -105,27 +126,35 @@ class CasualGamesService {
       LEFT JOIN player_sport_profiles psp ON pp.id = psp.player_profile_id AND psp.sport_id = $2
       WHERE p.casual_game_id = $1 AND p.status = 'joined'
       ORDER BY p.joined_at ASC
-    `, [gameId, game.sport_id]);
+    `, [gameId, game.sport_id, game.organized_by_user_id]);
 
     game.participants = participantsRes.rows;
     return game;
   }
 
   /**
-   * Create a casual game
+   * Create a casual game — requires an active ground booking
    */
   async createGame(userId, data) {
     const {
-      sport_id, title, description, game_date, start_time,
-      location_name, latitude, longitude, max_players, skill_level
+      ground_booking_id,
+      title,
+      description,
+      max_players,
+      skill_level,
+      sport_id
     } = data;
 
-    if (!sport_id || !title || !game_date || !start_time || !location_name || !max_players || !skill_level) {
-      throw this._badRequest('Missing required fields');
+    if (!ground_booking_id) {
+      throw this._badRequest('A valid ground booking is required to host a casual game. Please book a ground first.');
+    }
+
+    if (!title || !max_players || !skill_level) {
+      throw this._badRequest('Title, maximum players, and skill level are required');
     }
     
-    if (max_players <= 0) {
-      throw this._badRequest('Max players must be greater than 0');
+    if (parseInt(max_players, 10) <= 1) {
+      throw this._badRequest('Maximum players must be at least 2');
     }
 
     const validSkills = ['Beginner', 'Intermediate', 'Expert', 'Professional'];
@@ -133,17 +162,77 @@ class CasualGamesService {
       throw this._badRequest('Invalid skill level');
     }
 
-    // Validate sport exists
-    const sportRes = await query('SELECT id FROM sports WHERE id = $1', [sport_id]);
-    if (!sportRes.rows.length) throw this._badRequest('Sport not found');
+    // Verify booking exists, belongs to user, and is not cancelled
+    const bookingRes = await query(`
+      SELECT gb.id, gb.ground_id, gb.slot_id, gb.booked_by_user_id, gb.status,
+             g.name as ground_name, g.address as ground_address, g.city as ground_city,
+             g.latitude, g.longitude,
+             gbs.slot_date, gbs.start_time, gbs.end_time, gbs.sport_id as slot_sport_id,
+             s.id as sport_id, s.name as sport_name
+      FROM ground_bookings gb
+      JOIN grounds g ON g.id = gb.ground_id
+      JOIN ground_booking_slots gbs ON gbs.id = gb.slot_id
+      LEFT JOIN sports s ON s.id = gbs.sport_id
+      WHERE gb.id = $1
+    `, [ground_booking_id]);
 
-    const scheduledAt = new Date(`${game_date}T${start_time}:00Z`);
-    if (isNaN(scheduledAt.getTime())) {
-      throw this._badRequest('Invalid date/time');
+    if (bookingRes.rows.length === 0) {
+      throw this._notFound('Ground booking not found');
     }
+
+    const booking = bookingRes.rows[0];
+
+    if (booking.booked_by_user_id !== userId) {
+      throw this._forbidden('You can only host a casual game for your own ground booking');
+    }
+
+    if (booking.status === 'cancelled') {
+      throw this._badRequest('Cannot host a casual game on a cancelled ground booking');
+    }
+
+    const slotEndsAt = toGroundInstant(booking.slot_date, booking.end_time);
+    if (!slotEndsAt || slotEndsAt.getTime() <= Date.now()) {
+      throw this._badRequest('This ground booking has already ended. Select a future booking to host a casual game.');
+    }
+
+    // Prevent duplicate casual games for the same booking
+    const existingGame = await query(`
+      SELECT id FROM casual_games
+      WHERE ground_booking_id = $1 AND status NOT IN ('cancelled')
+      LIMIT 1
+    `, [ground_booking_id]);
+
+    if (existingGame.rows.length > 0) {
+      throw this._conflict('A casual game has already been created for this ground booking');
+    }
+
+    // Determine final sport
+    let finalSportId = sport_id || booking.slot_sport_id || booking.sport_id;
+    if (!finalSportId) {
+      const gsRes = await query(
+        'SELECT sport_id FROM ground_sports WHERE ground_id = $1 LIMIT 1',
+        [booking.ground_id]
+      );
+      finalSportId = gsRes.rows[0]?.sport_id;
+    }
+
+    if (!finalSportId) {
+      throw this._badRequest('No sport is associated with this ground booking');
+    }
+
+    const locationName = `${booking.ground_name}, ${booking.ground_address}, ${booking.ground_city}`;
     
-    if (scheduledAt < new Date()) {
-      throw this._badRequest('Cannot schedule a game in the past');
+    const scheduledAt = toGroundInstant(booking.slot_date, booking.start_time);
+    if (!scheduledAt) {
+      throw this._badRequest('Invalid booking date/time');
+    }
+
+    let durationMinutes = 60;
+    if (booking.start_time && booking.end_time) {
+      const [sh, sm] = booking.start_time.split(':').map(Number);
+      const [eh, em] = booking.end_time.split(':').map(Number);
+      const diff = (eh * 60 + em) - (sh * 60 + sm);
+      if (diff > 0) durationMinutes = diff;
     }
 
     const client = await pool.connect();
@@ -152,16 +241,18 @@ class CasualGamesService {
 
       const insertGameSQL = `
         INSERT INTO casual_games (
-          sport_id, organized_by_user_id, title, description,
-          scheduled_at, max_participants, is_private, status,
+          sport_id, ground_id, ground_booking_id, organized_by_user_id,
+          title, description, scheduled_at, duration_minutes,
+          max_participants, is_private, status,
           location_name, latitude, longitude, skill_level
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING id
       `;
       const gameRes = await client.query(insertGameSQL, [
-        sport_id, userId, title, description,
-        scheduledAt, max_players, false, 'open',
-        location_name, latitude || null, longitude || null, skill_level
+        finalSportId, booking.ground_id, booking.id, userId,
+        title, description || null, scheduledAt, durationMinutes,
+        parseInt(max_players, 10), false, 'open',
+        locationName, booking.latitude || null, booking.longitude || null, skill_level
       ]);
       const gameId = gameRes.rows[0].id;
 
@@ -175,6 +266,7 @@ class CasualGamesService {
       `, [gameId, userId, profileId]);
 
       await client.query('COMMIT');
+      expiredRecordsCleanup.wake();
       return await this.getGame(gameId);
     } catch (err) {
       await client.query('ROLLBACK');
@@ -229,8 +321,8 @@ class CasualGamesService {
     }
     
     if (data.game_date && data.start_time) {
-      const scheduledAt = new Date(`${data.game_date}T${data.start_time}:00Z`);
-      if (isNaN(scheduledAt.getTime())) throw this._badRequest('Invalid date/time');
+      const scheduledAt = toGroundInstant(data.game_date, data.start_time);
+      if (!scheduledAt) throw this._badRequest('Invalid date/time');
       fields.push(`scheduled_at = $${idx++}`);
       values.push(scheduledAt);
     }
@@ -258,6 +350,7 @@ class CasualGamesService {
 
     values.push(gameId);
     await query(`UPDATE casual_games SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+    expiredRecordsCleanup.wake();
 
     return await this.getGame(gameId);
   }

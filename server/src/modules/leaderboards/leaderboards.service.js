@@ -112,6 +112,11 @@ class LeaderboardsService {
     if (lb.tournament_id) {
       // Visibility check
       await tournamentsService.getTournament(lb.tournament_id, requestingUser);
+    } else if (!requestingUser) {
+      // Public leaderboard reads are limited to published tournaments.
+      const error = new Error('Leaderboard not found');
+      error.statusCode = 404;
+      throw error;
     }
     return lb;
   }
@@ -221,7 +226,7 @@ class LeaderboardsService {
         SELECT le.id, le.rank, le.stat_value, le.player_profile_id, pp.display_name, pp.avatar_url
         FROM leaderboard_entries le
         JOIN player_profiles pp ON le.player_profile_id = pp.id
-        WHERE le.leaderboard_id = $1
+        WHERE le.leaderboard_id = $1 AND pp.is_public = true
         ORDER BY le.rank ASC
       `, [leaderboardId]);
       return res.rows;

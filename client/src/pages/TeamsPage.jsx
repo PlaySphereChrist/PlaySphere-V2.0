@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { api } from '../lib/api';
+import {
+  createTeam,
+  getTeamInvitations,
+  getPublicTeams,
+  respondToTeamInvitation,
+} from '../features/teams/api';
+import { useAuth } from '../store/AuthContext';
+import { getSports } from '../features/sports/api';
 import {
   PsButton,
   PsCard,
@@ -30,21 +37,28 @@ export default function TeamsPage() {
   const [createError, setCreateError] = useState('');
 
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const fetchData = async () => {
     try {
       setLoading(true);
       setError('');
       
-      const [teamsRes, invRes, sportsRes] = await Promise.all([
-        api.get('/teams'),
-        api.get('/team-invitations'),
-        api.get('/sports')
-      ]);
+      const [teamsRes, sportsRes] = await Promise.all([getPublicTeams(), getSports()]);
 
       setTeams(teamsRes.data.teams || []);
-      setInvitations(invRes.data.invitations || []);
       setSports(sportsRes.data.sports || []);
+      if (user) {
+        try {
+          const invRes = await getTeamInvitations();
+          setInvitations(invRes.data.invitations || []);
+        } catch (err) {
+          console.error('Failed to load team invitations', err);
+          setInvitations([]);
+        }
+      } else {
+        setInvitations([]);
+      }
     } catch (err) {
       setError(err.message || 'Failed to load teams data.');
     } finally {
@@ -54,7 +68,7 @@ export default function TeamsPage() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [user]);
 
   const handleCreateTeam = async (e) => {
     e.preventDefault();
@@ -66,7 +80,7 @@ export default function TeamsPage() {
 
     setCreateLoading(true);
     try {
-      const res = await api.post('/teams', formData);
+      const res = await createTeam(formData);
       setShowCreate(false);
       setFormData({ name: '', sport_id: '', description: '', city: '' });
       
@@ -85,7 +99,7 @@ export default function TeamsPage() {
 
   const handleRespond = async (invitationId, action) => {
     try {
-      await api.post(`/team-invitations/${invitationId}/respond`, { action });
+      await respondToTeamInvitation(invitationId, action);
       fetchData(); // Refresh everything
     } catch (err) {
       setError(err.message || 'Failed to respond to invitation.');
@@ -99,12 +113,13 @@ export default function TeamsPage() {
       <PsPageHeader 
         title="Teams" 
         actions={
-          <PsButton 
-            variant={showCreate ? "secondary" : "primary"} 
-            onClick={() => setShowCreate(!showCreate)}
-          >
-            {showCreate ? 'Cancel' : '+ Create Team'}
-          </PsButton>
+          user ? (
+            <PsButton variant={showCreate ? "secondary" : "primary"} onClick={() => setShowCreate(!showCreate)}>
+              {showCreate ? 'Cancel' : '+ Create Team'}
+            </PsButton>
+          ) : (
+            <Link to="/login" state={{ from: '/teams' }}><PsButton>Sign in to create a team</PsButton></Link>
+          )
         }
       />
 
@@ -155,7 +170,7 @@ export default function TeamsPage() {
       )}
 
       {/* PENDING INVITATIONS */}
-      {invitations.length > 0 && (
+      {user && invitations.length > 0 && (
         <div className="space-y-3">
           <h2 className="text-lg font-serif font-semibold text-primary">Pending Invitations</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -177,12 +192,12 @@ export default function TeamsPage() {
 
       {/* MY TEAMS */}
       <div className="space-y-4">
-        <h2 className="text-lg font-serif font-semibold text-primary">My Teams</h2>
+        <h2 className="text-lg font-serif font-semibold text-primary">{user ? 'Teams' : 'Community Teams'}</h2>
         
         {teams.length === 0 ? (
-          <PsEmpty 
-            title="No Teams Yet" 
-            message="You are not part of any teams. Create one or ask a manager to invite you." 
+          <PsEmpty
+            title="No teams found"
+            message="There are no active teams to show right now."
           />
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

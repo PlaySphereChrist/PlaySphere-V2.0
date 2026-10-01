@@ -1,5 +1,9 @@
 import { useState, useEffect } from 'react';
-import { api } from '../lib/api';
+import {
+  createPlayerProfile,
+  getMyPlayerProfile,
+  updatePlayerProfile,
+} from '../features/player-profiles/api';
 import {
   PsButton,
   PsCard,
@@ -37,7 +41,7 @@ export default function PlayerProfilePage() {
   const loadProfile = async () => {
     try {
       setLoading(true);
-      const res = await api.get('/player-profiles/me');
+      const res = await getMyPlayerProfile();
       setProfile(res.data.profile);
       if (res.data.profile) {
         const p = res.data.profile;
@@ -79,9 +83,9 @@ export default function PlayerProfilePage() {
     try {
       let res;
       if (profile) {
-        res = await api.patch('/player-profiles/me', payload);
+        res = await updatePlayerProfile(payload);
       } else {
-        res = await api.post('/player-profiles/me', payload);
+        res = await createPlayerProfile(payload);
       }
       setProfile(res.data.profile);
       setIsEditing(false);

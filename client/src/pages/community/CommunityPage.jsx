@@ -1,12 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { api } from '../../lib/api';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
+import {
+  getCommunity,
+  getCommunityMembers,
+  joinCommunity,
+  leaveCommunity,
+  listCommunityPosts,
+} from '../../features/communities/api';
 import { useAuth } from '../../store/AuthContext';
 import {
   PsButton,
   PsCard,
   PsAlert,
-  PsPageHeader,
   PsLoading,
   PsEmpty
 } from '../../components/ui';
@@ -15,9 +20,9 @@ import PostItem from './PostItem';
 
 export default function CommunityPage() {
   const { user } = useAuth();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const communityId = searchParams.get('community_id');
-  const communityQuery = communityId ? `?community_id=${communityId}` : '';
 
   const [community, setCommunity] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -31,7 +36,7 @@ export default function CommunityPage() {
 
   const fetchCommunity = async () => {
     try {
-      const res = await api.request('GET', `/community${communityQuery}`);
+      const res = await getCommunity(communityId);
       if (res.success) {
         setCommunity(res.community);
       } else {
@@ -45,13 +50,16 @@ export default function CommunityPage() {
   };
 
   const checkMembership = async () => {
+    if (!user) {
+      setIsMember(false);
+      return;
+    }
     try {
       let page = 1;
       let found = false;
       let keepGoing = true;
       while (keepGoing) {
-        const querySep = communityQuery ? '&' : '?';
-        const res = await api.request('GET', `/community/members${communityQuery}${querySep}limit=100&page=${page}`);
+        const res = await getCommunityMembers(communityId, page);
         if (!res.success) break;
         found = res.members.some(m => m.user_id === user.id);
         if (found || res.members.length < 100 || (page * 100) >= res.total) {
@@ -69,8 +77,7 @@ export default function CommunityPage() {
   const fetchPosts = async () => {
     setPostsLoading(true);
     try {
-      const endpoint = activeTab === 'equipment' ? `/community/equipment-requests${communityQuery}` : `/community/posts${communityQuery}`;
-      const res = await api.request('GET', endpoint);
+      const res = await listCommunityPosts(communityId, activeTab === 'equipment');
       if (res.success) {
         setPosts(res.posts || []);
       } else {
@@ -87,18 +94,17 @@ export default function CommunityPage() {
     fetchCommunity();
     checkMembership();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [communityQuery]);
+  }, [communityId, user]);
 
   useEffect(() => {
     fetchPosts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, communityQuery]);
+  }, [activeTab, communityId]);
 
   const handleJoinLeave = async () => {
     setMembershipLoading(true);
     try {
-      const endpoint = isMember ? `/community/leave${communityQuery}` : `/community/join${communityQuery}`;
-      const res = await api.request('POST', endpoint);
+      const res = isMember ? await leaveCommunity(communityId) : await joinCommunity(communityId);
       if (res.success) {
         setIsMember(!isMember);
       } else {
@@ -117,21 +123,36 @@ export default function CommunityPage() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-12">
-      <PsCard className="bg-maroon overflow-hidden border-none text-surface">
+      <PsCard className="overflow-hidden border-none" style={{ background: 'var(--community-banner-bg)' }}>
         <div className="px-6 py-8 flex flex-col sm:flex-row justify-between items-center gap-6 relative">
           <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 100% 100%, #ffffff 0%, transparent 50%)' }}></div>
           <div className="relative z-10 text-center sm:text-left">
-            <h2 className="text-3xl font-serif font-bold text-surface">{community.name}</h2>
-            <p className="mt-2 text-surface/80">{community.description}</p>
+            <h2 className="text-3xl font-serif font-bold text-white dark:text-primary">{community.name}</h2>
+            <p className="mt-2 text-white/80 dark:text-secondary">{community.description}</p>
           </div>
           <div className="relative z-10">
-            <PsButton
-              onClick={handleJoinLeave}
-              disabled={membershipLoading}
-              className={isMember ? 'bg-surface text-maroon hover:bg-pill' : 'bg-gold hover:bg-gold/90 text-surface'}
-            >
-              {membershipLoading ? '...' : isMember ? 'Leave Community' : 'Join Community'}
-            </PsButton>
+            {user ? (
+              <PsButton
+                variant="primary"
+                onClick={handleJoinLeave}
+                disabled={membershipLoading}
+                style={{
+                  backgroundColor: 'var(--community-action-bg)',
+                  color: '#FFFFFF',
+                }}
+              >
+                {membershipLoading ? '...' : isMember ? 'Leave Community' : 'Join Community'}
+              </PsButton>
+            ) : (
+              <Link to="/login" state={{ from: `${location.pathname}${location.search}` }}>
+                <PsButton
+                  variant="primary"
+                  style={{ backgroundColor: 'var(--community-action-bg)', color: '#FFFFFF' }}
+                >
+                  Sign in to join
+                </PsButton>
+              </Link>
+            )}
           </div>
         </div>
       </PsCard>
@@ -166,11 +187,11 @@ export default function CommunityPage() {
           <CreatePostForm
             isEquipment={activeTab === 'equipment'}
             onCreated={fetchPosts}
-            communityQuery={communityQuery}
+            communityId={communityId}
           />
         ) : (
           <PsAlert variant="info" className="mb-6">
-            You must join the community to post and comment.
+            {user ? 'Join the community to post and comment.' : <>Sign in and join the community to post and comment. <Link className="font-semibold underline" to="/login" state={{ from: `${location.pathname}${location.search}` }}>Sign in</Link></>}
           </PsAlert>
         )}
 

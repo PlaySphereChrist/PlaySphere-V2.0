@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { api } from '../../lib/api';
+import { createCommunityPost } from '../../features/communities/api';
 import { PsCard, PsInput, PsSelect, PsTextarea, PsButton, PsAlert } from '../../components/ui';
 
-export default function CreatePostForm({ onCreated, isEquipment = false, communityQuery = '' }) {
+export default function CreatePostForm({ onCreated, isEquipment = false, communityId = null }) {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [category, setCategory] = useState(isEquipment ? 'equipment_request' : 'general');
@@ -16,10 +16,9 @@ export default function CreatePostForm({ onCreated, isEquipment = false, communi
     setSubmitting(true);
     setError(null);
     try {
-      const endpoint = isEquipment ? `/community/equipment-requests${communityQuery}` : `/community/posts${communityQuery}`;
       const payload = isEquipment ? { title, body } : { title, body, category };
 
-      const res = await api.request('POST', endpoint, payload);
+      const res = await createCommunityPost(communityId, payload, isEquipment);
 
       if (!res.success) throw new Error(res.message || 'Failed to create post');
 

@@ -6,16 +6,14 @@ const asyncHandler = require('../../utils/asyncHandler');
 const { authenticate } = require('../../middleware/auth');
 const ctrl = require('./statistics.controller');
 
-// All statistics routes require authentication
-router.use(authenticate);
-
 // ---------------------------------------------------------------------------
 // Tournament-scoped player statistics
 // ---------------------------------------------------------------------------
 
 // GET /api/statistics/tournaments/:tournamentId/players
 // Returns all player stats materialized for this tournament.
-// Authorization: any authenticated user with tournament visibility.
+// Public tournament pages may read these aggregates; tournament visibility is
+// enforced by the statistics service before data is returned.
 router.get(
   '/tournaments/:tournamentId/players',
   asyncHandler(ctrl.getTournamentPlayerStatistics)
@@ -66,6 +64,7 @@ router.get(
 // Rebuilds player_statistics and team_statistics from performance events.
 router.post(
   '/tournaments/:tournamentId/recalculate',
+  authenticate,
   asyncHandler(ctrl.recalculateTournamentStatistics)
 );
 

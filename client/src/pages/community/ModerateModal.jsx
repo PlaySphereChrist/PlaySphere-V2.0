@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { api } from '../../lib/api';
+import { moderateCommunityContent } from '../../features/communities/api';
 import ErrorMessage from '../../components/ErrorMessage';
 import Spinner from '../../components/Spinner';
 
@@ -14,11 +14,7 @@ export default function ModerateModal({ postId, commentId, onClose, onSuccess })
     setError(null);
 
     try {
-      const endpoint = postId 
-        ? `/community/posts/${postId}/moderate`
-        : `/community/comments/${commentId}/moderate`;
-
-      const res = await api.request('POST', endpoint, { moderate: true, reason });
+      const res = await moderateCommunityContent(postId || commentId, Boolean(postId), reason);
 
       if (res.success) {
         onSuccess();

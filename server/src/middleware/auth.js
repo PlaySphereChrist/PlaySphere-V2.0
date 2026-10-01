@@ -71,6 +71,43 @@ const authenticate = async (req, res, next) => {
 };
 
 /**
+ * Attach a user when a valid access token is present, but allow anonymous reads.
+ * Invalid or expired tokens fall back to the public view; database failures still surface.
+ */
+const authenticateOptional = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return next();
+
+  try {
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET);
+    if (decoded.type !== 'access') return next();
+
+    const userResult = await query(
+      `SELECT id, email, is_active, is_email_verified
+       FROM users WHERE id = $1`,
+      [decoded.id]
+    );
+    if (userResult.rows.length === 0 || !userResult.rows[0].is_active) return next();
+
+    const user = userResult.rows[0];
+    const rolesResult = await query(
+      `SELECT r.name
+       FROM roles r
+       JOIN user_roles ur ON r.id = ur.role_id
+       WHERE ur.user_id = $1`,
+      [user.id]
+    );
+    user.roles = rolesResult.rows.map(row => row.name);
+    req.user = user;
+    return next();
+  } catch (error) {
+    if (error.name === 'TokenExpiredError' || error.name === 'JsonWebTokenError') return next();
+    return next(error);
+  }
+};
+
+/**
  * Middleware to authorize specific roles.
  * Must be used AFTER authenticate middleware.
  */
@@ -95,5 +132,6 @@ const authorizeRoles = (...allowedRoles) => {
 
 module.exports = {
   authenticate,
+  authenticateOptional,
   authorizeRoles
 };

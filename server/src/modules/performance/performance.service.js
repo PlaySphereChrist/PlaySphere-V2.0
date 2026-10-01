@@ -2,6 +2,7 @@
 
 const { pool, query } = require('../../config/database');
 const tournamentsService = require('../tournaments/tournaments.service');
+const sseService = require('../realtime/sse.service');
 
 class PerformanceService {
 
@@ -58,7 +59,6 @@ class PerformanceService {
         pe.sport_stat_definition_id,
         pe.event_time_seconds,
         pe.event_metadata,
-        pe.recorded_by_user_id,
         pe.recorded_at,
         pe.created_at,
         ssd.stat_key,
@@ -85,7 +85,6 @@ class PerformanceService {
         pe.sport_stat_definition_id,
         pe.event_time_seconds,
         pe.event_metadata,
-        pe.recorded_by_user_id,
         pe.recorded_at,
         pe.created_at,
         ssd.stat_key,
@@ -115,17 +114,18 @@ class PerformanceService {
       SELECT
         pep.id,
         pep.performance_event_id,
-        pep.player_profile_id,
+        CASE WHEN pp.is_public THEN pep.player_profile_id ELSE NULL END AS player_profile_id,
         pep.team_id,
         pep.value,
         pep.created_at,
-        pp.display_name,
+        CASE WHEN pp.is_public THEN pp.display_name ELSE 'Private participant' END AS display_name,
         t.name AS team_name
       FROM performance_event_players pep
       LEFT JOIN player_profiles pp ON pep.player_profile_id = pp.id
       LEFT JOIN teams t ON pep.team_id = t.id
       WHERE pep.performance_event_id = $1
-    `, [eventId]);
+        AND (pp.is_public = true OR pp.user_id = $2 OR $3 = true)
+    `, [eventId, requestingUser?.id || null, requestingUser?.roles?.includes('ADMIN') || false]);
 
     return res.rows;
   }
@@ -309,7 +309,7 @@ class PerformanceService {
 
       await client.query('COMMIT');
 
-      return {
+      const result = {
         event: {
           ...event,
           stat_key: statDef.stat_key,
@@ -317,6 +317,11 @@ class PerformanceService {
         },
         players: insertedPlayers
       };
+      sseService.broadcastMatch(matchId, 'performance_event_added', result);
+      if (match.tournament_id) {
+        sseService.broadcastTournament(match.tournament_id, 'performance_event_added', { matchId, ...result });
+      }
+      return result;
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;

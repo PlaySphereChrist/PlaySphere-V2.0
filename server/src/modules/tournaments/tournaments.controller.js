@@ -1,16 +1,18 @@
 const tournamentsService = require('./tournaments.service');
+const { copilotService } = require('./copilot.service');
 
 class TournamentsController {
   /**
    * GET /api/tournaments
-   * Public: only registration_open
-   * ORGANIZER: own + registration_open
+   * Public: all published tournaments
+   * ORGANIZER: own drafts + all published tournaments
    * ADMIN: all
    */
   async listTournaments(req, res) {
     const filters = {
       sport_id:          req.query.sport_id,
       status:            req.query.status,
+      search:            req.query.search,
       organizer_user_id: req.query.organizer_user_id,
     };
     const tournaments = await tournamentsService.listTournaments(filters, req.user);
@@ -26,6 +28,14 @@ class TournamentsController {
       req.user
     );
     res.json({ success: true, data: { tournament } });
+  }
+
+  async listPublicParticipants(req, res) {
+    const participants = await tournamentsService.listPublicParticipants(
+      req.params.tournamentId,
+      req.user
+    );
+    res.json({ success: true, data: { participants } });
   }
 
   /**
@@ -70,6 +80,42 @@ class TournamentsController {
   async deleteTournament(req, res) {
     await tournamentsService.deleteTournament(req.params.tournamentId, req.user);
     res.json({ success: true, message: 'Tournament deleted successfully' });
+  }
+
+  /**
+   * POST /api/tournaments/copilot/draft
+   * Generates a validated tournament draft from a plain-text prompt
+   */
+  async draftTournamentWithCopilot(req, res) {
+    const { prompt } = req.body;
+    const result = await copilotService.draftTournament(prompt, req.user);
+    res.json({ success: true, data: result });
+  }
+
+  async assignCoOrganizer(req, res) {
+    const tournament = await tournamentsService.assignCoOrganizer(
+      req.params.tournamentId,
+      req.user,
+      req.body
+    );
+    res.json({ success: true, data: { tournament } });
+  }
+
+  async removeCoOrganizer(req, res) {
+    const tournament = await tournamentsService.removeCoOrganizer(
+      req.params.tournamentId,
+      req.user
+    );
+    res.json({ success: true, data: { tournament } });
+  }
+
+  async postTournamentAnnouncement(req, res) {
+    const post = await tournamentsService.postTournamentAnnouncement(
+      req.params.tournamentId,
+      req.user,
+      req.body
+    );
+    res.status(201).json({ success: true, data: { post } });
   }
 }
 

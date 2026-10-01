@@ -79,8 +79,9 @@ class StatisticsService {
       LEFT JOIN sport_stat_definitions ssd
         ON ssd.sport_id = ps.sport_id AND ssd.stat_key = ps.stat_key
       WHERE ps.tournament_id = $1
+        AND (pp.is_public = true OR pp.user_id = $2 OR $3 = true)
       ORDER BY pp.display_name, ps.stat_key
-    `, [tournamentId]);
+    `, [tournamentId, requestingUser?.id || null, requestingUser?.roles?.includes('ADMIN') || false]);
 
     return res.rows;
   }
@@ -95,12 +96,15 @@ class StatisticsService {
 
     // Verify the player exists
     const playerCheck = await query(
-      'SELECT id, display_name FROM player_profiles WHERE id = $1',
+      'SELECT id, user_id, is_public, display_name, avatar_url FROM player_profiles WHERE id = $1',
       [playerProfileId]
     );
     if (!playerCheck.rows.length) {
       throw this._notFound('Player profile not found');
     }
+    const canViewPrivateProfile = playerCheck.rows[0].is_public ||
+      requestingUser?.id === playerCheck.rows[0].user_id || this._isAdmin(requestingUser);
+    if (!canViewPrivateProfile) throw this._notFound('Player profile not found');
 
     const res = await query(`
       SELECT
@@ -130,7 +134,7 @@ class StatisticsService {
     `, [tournamentId, playerProfileId]);
 
     return {
-      player: playerCheck.rows[0],
+      player: { id: playerCheck.rows[0].id, display_name: playerCheck.rows[0].display_name, avatar_url: playerCheck.rows[0].avatar_url },
       statistics: res.rows
     };
   }
@@ -181,25 +185,28 @@ class StatisticsService {
   async getPlayerStatistics(playerProfileId, requestingUser) {
     // Verify the player profile exists
     const playerCheck = await query(
-      'SELECT id, display_name, avatar_url FROM player_profiles WHERE id = $1',
+      'SELECT id, user_id, is_public, display_name, avatar_url FROM player_profiles WHERE id = $1',
       [playerProfileId]
     );
     if (!playerCheck.rows.length) {
       throw this._notFound('Player profile not found');
     }
+    const canViewPrivateProfile = playerCheck.rows[0].is_public ||
+      requestingUser?.id === playerCheck.rows[0].user_id || this._isAdmin(requestingUser);
+    if (!canViewPrivateProfile) throw this._notFound('Player profile not found');
 
     // Build the visibility filter for tournaments inline
     const isAdmin = this._isAdmin(requestingUser);
     const isOrganizer = requestingUser?.roles?.includes('ORGANIZER');
 
-    let tournamentFilter = `t.status IN ('registration_open','registration_closed','in_progress','completed')`;
+    let tournamentFilter = `t.status IN ('registration_open','registration_closed','in_progress','completed','cancelled','archived')`;
     const params = [playerProfileId];
     if (isAdmin) {
       // Admins see all
       tournamentFilter = '1=1';
     } else if (isOrganizer) {
       params.push(requestingUser.id);
-      tournamentFilter = `(t.organizer_user_id = $${params.length} OR t.status IN ('registration_open','registration_closed','in_progress','completed'))`;
+      tournamentFilter = `(t.organizer_user_id = $${params.length} OR t.status IN ('registration_open','registration_closed','in_progress','completed','cancelled','archived'))`;
     }
 
     const res = await query(`
@@ -230,7 +237,11 @@ class StatisticsService {
     `, params);
 
     return {
-      player: playerCheck.rows[0],
+      player: {
+        id: playerCheck.rows[0].id,
+        display_name: playerCheck.rows[0].display_name,
+        avatar_url: playerCheck.rows[0].avatar_url
+      },
       statistics: res.rows
     };
   }
@@ -278,7 +289,7 @@ class StatisticsService {
         pep.player_profile_id,
         pep.team_id,
         pep.value,
-        pp.display_name AS player_name,
+        CASE WHEN pp.is_public THEN pp.display_name ELSE 'Private participant' END AS player_name,
         t.name AS team_name
       FROM performance_events pe
       JOIN sport_stat_definitions ssd ON pe.sport_stat_definition_id = ssd.id
@@ -286,8 +297,9 @@ class StatisticsService {
       LEFT JOIN player_profiles pp ON pep.player_profile_id = pp.id
       LEFT JOIN teams t ON pep.team_id = t.id
       WHERE pe.match_id = $1
+        AND (pp.is_public = true OR pp.user_id = $2 OR $3 = true)
       ORDER BY pe.recorded_at, ssd.stat_key
-    `, [matchId]);
+    `, [matchId, requestingUser?.id || null, requestingUser?.roles?.includes('ADMIN') || false]);
 
     // Produce a summary grouped by player + stat
     const summaryMap = {};

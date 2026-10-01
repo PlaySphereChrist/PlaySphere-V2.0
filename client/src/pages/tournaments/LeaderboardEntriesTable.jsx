@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '../../lib/api';
+import { generateLeaderboard, getLeaderboardEntries } from '../../features/leaderboards/api';
 import {
   PsButton,
-  PsBadge,
   PsAlert,
   PsLoading,
   PsEmpty
@@ -21,7 +20,7 @@ export default function LeaderboardEntriesTable({ leaderboard, isOrganizerOrAdmi
     try {
       setLoading(true);
       setError('');
-      const res = await api.get(`/leaderboards/${leaderboard.id}/entries`);
+      const res = await getLeaderboardEntries(leaderboard.id);
       setEntries(res.entries || []);
     } catch (err) {
       setError(err.message || 'Failed to load leaderboard entries');
@@ -42,7 +41,7 @@ export default function LeaderboardEntriesTable({ leaderboard, isOrganizerOrAdmi
     setGenError('');
     setGenSuccess('');
     try {
-      const res = await api.post(`/leaderboards/${leaderboard.id}/generate`, {});
+      const res = await generateLeaderboard(leaderboard.id);
       setGenSuccess(`Generated ${res.data.entries_generated} entr${res.data.entries_generated === 1 ? 'y' : 'ies'}.`);
       await loadEntries();
       onGenerated?.();
@@ -54,6 +53,7 @@ export default function LeaderboardEntriesTable({ leaderboard, isOrganizerOrAdmi
   };
 
   const isPlayer = leaderboard.leaderboard_type === 'player';
+  const maxVal = Math.max(...entries.map((e) => Number(e.stat_value) || 0), 1);
 
   const getRankBadgeClass = (rank) => {
     if (rank === 1) return 'bg-gold/20 text-gold border border-gold/40';
@@ -172,9 +172,21 @@ export default function LeaderboardEntriesTable({ leaderboard, isOrganizerOrAdmi
                     </div>
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-right">
-                    <span className="font-bold text-primary tabular-nums">
-                      {Number(entry.stat_value).toLocaleString(undefined, { maximumFractionDigits: 4 })}
-                    </span>
+                    <div className="flex items-center justify-end gap-3">
+                      <div className="hidden sm:block w-24 bg-border/40 h-2 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            isPlayer ? 'bg-maroon' : 'bg-[#C9972C]'
+                          }`}
+                          style={{
+                            width: `${Math.max(4, Math.min(100, Math.round((Number(entry.stat_value) / maxVal) * 100)))}%`
+                          }}
+                        />
+                      </div>
+                      <span className="font-bold text-primary tabular-nums">
+                        {Number(entry.stat_value).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
                   </td>
                 </tr>
               ))}

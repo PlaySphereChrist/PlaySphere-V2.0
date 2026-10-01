@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { api } from '../lib/api';
+import { useParams, Link } from 'react-router-dom';
+import { cancelBooking, getBooking } from '../features/bookings/api';
+import { formatDate } from '../utils/dateTime';
+import {
+  createGroundBookingOrder,
+  processGroundBookingRefund,
+  verifyGroundBookingPayment,
+} from '../features/payments/api';
 import {
   PsButton,
   PsCard,
@@ -9,8 +15,15 @@ import {
   PsInput,
   PsPageHeader,
   PsLoading,
-  PsBackButton
+  PsBackButton,
+  PsErrorState
 } from '../components/ui';
+
+const formatCurrency = (value) => new Intl.NumberFormat('en-IN', {
+  style: 'currency',
+  currency: 'INR',
+  maximumFractionDigits: 2,
+}).format(Number(value) || 0);
 
 function loadRazorpayScript() {
   return new Promise((resolve) => {
@@ -25,15 +38,13 @@ function loadRazorpayScript() {
 
 export default function BookingDetailsPage() {
   const { bookingId } = useParams();
-  const navigate = useNavigate();
-
   const [booking, setBooking] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentError, setPaymentError] = useState('');
-  const [paymentSuccess, setPaymentSuccess] = useState(false);
+  const [paymentResult, setPaymentResult] = useState(null);
 
   const [refundLoading, setRefundLoading] = useState(false);
   const [refundError, setRefundError] = useState('');
@@ -48,7 +59,8 @@ export default function BookingDetailsPage() {
   const fetchBooking = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await api.get(`/ground-bookings/${bookingId}`);
+      setError('');
+      const res = await getBooking(bookingId);
       setBooking(res.data.booking);
     } catch (err) {
       setError(err.message || 'Failed to load booking details');
@@ -66,9 +78,7 @@ export default function BookingDetailsPage() {
     try {
       setCancelling(true);
       setCancelError('');
-      const res = await api.post(`/ground-bookings/${bookingId}/cancel`, {
-        reason: cancelReason
-      });
+      const res = await cancelBooking(bookingId, cancelReason);
       setCancelResult(res.message);
       setShowCancelModal(false);
       fetchBooking();
@@ -82,6 +92,7 @@ export default function BookingDetailsPage() {
   const handlePayNow = async () => {
     setPaymentLoading(true);
     setPaymentError('');
+    setPaymentResult(null);
 
     try {
       const scriptLoaded = await loadRazorpayScript();
@@ -93,7 +104,7 @@ export default function BookingDetailsPage() {
 
       let orderData;
       try {
-        const orderRes = await api.post(`/ground-bookings/${bookingId}/payment/order`, {});
+        const orderRes = await createGroundBookingOrder(bookingId);
         orderData = orderRes.data;
       } catch (err) {
         setPaymentError(err.message || 'Failed to create payment order');
@@ -114,12 +125,15 @@ export default function BookingDetailsPage() {
         theme: { color: '#6E1423' },
         handler: async function (response) {
           try {
-            await api.post(`/ground-bookings/${bookingId}/payment/verify`, {
+            const verifyRes = await verifyGroundBookingPayment(bookingId, {
               razorpay_order_id: response.razorpay_order_id,
               razorpay_payment_id: response.razorpay_payment_id,
               razorpay_signature: response.razorpay_signature,
             });
-            setPaymentSuccess(true);
+            setPaymentResult({
+              captured: verifyRes.data.captured,
+              status: verifyRes.data.status,
+            });
             fetchBooking();
           } catch (err) {
             setPaymentError(
@@ -156,7 +170,7 @@ export default function BookingDetailsPage() {
     setRefundError('');
     setRefundSuccess('');
     try {
-      const res = await api.post(`/ground-bookings/${bookingId}/payment/refund`, {});
+      const res = await processGroundBookingRefund(bookingId);
       setRefundSuccess(res.message || 'Refund processed successfully.');
       fetchBooking();
     } catch (err) {
@@ -172,7 +186,7 @@ export default function BookingDetailsPage() {
     return (
       <div className="space-y-4">
         <PsBackButton to="/bookings" label="Back to Bookings" />
-        <PsAlert variant="error">{error}</PsAlert>
+        <PsErrorState message={error} retry={fetchBooking} />
       </div>
     );
   }
@@ -181,7 +195,6 @@ export default function BookingDetailsPage() {
 
   let dStr = booking.slot_date;
   if (dStr && dStr.includes('T')) dStr = dStr.split('T')[0];
-  const bookingDate = new Date(dStr);
 
   const getStatusVariant = (status) => {
     switch (status) {
@@ -206,9 +219,10 @@ export default function BookingDetailsPage() {
   const isCancellable = ['pending', 'confirmed'].includes(booking.status);
   const isPending = booking.status === 'pending';
   const paymentCaptured = booking.payment_status === 'captured';
+  const paymentAuthorized = booking.payment_status === 'authorized';
   const paymentRefunded = booking.payment_status === 'refunded';
 
-  const canPay = isPending && !paymentCaptured && booking.status !== 'cancelled';
+  const canPay = isPending && !paymentCaptured && !paymentAuthorized && booking.status !== 'cancelled';
   const canRequestRefund = booking.status === 'cancelled' && paymentCaptured && !paymentRefunded;
 
   return (
@@ -216,10 +230,21 @@ export default function BookingDetailsPage() {
       <PsBackButton to="/bookings" label="Back to Bookings" />
       <PsPageHeader title="Booking Details" />
 
+      {error && booking && (
+        <PsAlert variant="warning" className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <span>Could not refresh the booking details: {error}</span>
+          <PsButton size="sm" variant="secondary" onClick={fetchBooking}>Retry</PsButton>
+        </PsAlert>
+      )}
       {cancelResult && <PsAlert variant="success">{cancelResult}</PsAlert>}
-      {paymentSuccess && (
+      {paymentResult?.captured && (
         <PsAlert variant="success">
-          ✓ Payment verified successfully. Your booking is now confirmed.
+          ✓ Payment captured successfully.
+        </PsAlert>
+      )}
+      {(paymentResult?.status === 'authorized' || paymentAuthorized) && !paymentCaptured && (
+        <PsAlert variant="info">
+          Payment is authorized and awaiting capture by Razorpay. Your booking will be confirmed after capture.
         </PsAlert>
       )}
       {refundSuccess && <PsAlert variant="success">{refundSuccess}</PsAlert>}
@@ -243,7 +268,7 @@ export default function BookingDetailsPage() {
           <div>
             <p className="text-sm font-medium text-secondary">Date &amp; Time</p>
             <p className="mt-1 text-sm text-primary">
-              {bookingDate.toLocaleDateString()} at {booking.start_time?.slice(0,5)} - {booking.end_time?.slice(0,5)}
+              {formatDate(dStr)} at {booking.start_time?.slice(0,5)} - {booking.end_time?.slice(0,5)}
             </p>
           </div>
           
@@ -265,18 +290,21 @@ export default function BookingDetailsPage() {
             <p className="text-sm font-medium text-secondary mb-2 border-b border-border pb-1">Pricing</p>
             <div className="space-y-1.5 text-sm">
               <div className="flex justify-between">
-                <span className="text-secondary">Total:</span>
-                <span className="font-bold text-primary">₹{booking.total_price}</span>
+                <span className="text-secondary">Total booking price</span>
+                <span className="font-bold text-primary">{formatCurrency(booking.total_price)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-secondary">Advance (50%):</span>
-                <span className="font-medium text-primary">₹{booking.advance_amount}</span>
+                <span className="text-secondary">Advance payment</span>
+                <span className="font-medium text-primary">{formatCurrency(booking.advance_amount)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-secondary">Remaining:</span>
-                <span className="font-medium text-primary">₹{booking.remaining_amount}</span>
+                <span className="text-secondary">Remaining, due at venue</span>
+                <span className="font-medium text-primary">{formatCurrency(booking.remaining_amount)}</span>
               </div>
             </div>
+            <p className="mt-3 rounded-lg bg-pill p-3 text-xs text-secondary">
+              Cancellation policy: the advance is refundable if you cancel more than 2 hours before the slot. If you cancel within 2 hours, the advance is retained.
+            </p>
           </div>
           
           <div className="sm:col-span-2">
@@ -320,22 +348,49 @@ export default function BookingDetailsPage() {
       {/* === PAYMENT SECTION === */}
       {canPay && (
         <PsCard className="p-6 border-maroon/20 bg-maroon/5">
-          <h3 className="text-lg font-serif font-bold text-primary">Pay Advance</h3>
+          <p className="text-xs font-semibold uppercase tracking-wide text-maroon">Next step</p>
+          <h3 className="mt-1 text-lg font-serif font-bold text-primary">Pay the booking advance</h3>
           <p className="mt-1 text-sm text-secondary">
-            Pay ₹{booking.advance_amount} now to confirm your booking. The remaining ₹{booking.remaining_amount} is due at the venue.
+            Pay {formatCurrency(booking.advance_amount)} now to confirm your booking. The remaining {formatCurrency(booking.remaining_amount)} is due at the venue.
           </p>
           {paymentError && <PsAlert variant="error" className="mt-4">{paymentError}</PsAlert>}
-          
           <div className="mt-5">
             <PsButton
               onClick={handlePayNow}
               disabled={paymentLoading}
               className="w-full sm:w-auto"
             >
-              {paymentLoading ? 'Processing...' : `Pay ₹${booking.advance_amount} via Razorpay`}
+              {paymentLoading ? 'Processing...' : `Pay ${formatCurrency(booking.advance_amount)} via Razorpay`}
             </PsButton>
           </div>
           <p className="mt-3 text-xs text-muted">Powered by Razorpay Test Mode. No real money is charged.</p>
+        </PsCard>
+      )}
+
+      {/* === CASUAL GAME HOSTING SECTION === */}
+      {booking.status !== 'cancelled' && (
+        <PsCard className="p-6 border-maroon/20 bg-surface">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div>
+              <h3 className="text-lg font-serif font-bold text-primary flex items-center gap-2">
+                <span>⚽</span> Casual Pickup Game
+              </h3>
+              <p className="mt-1 text-sm text-secondary">
+                {booking.casual_games_count > 0
+                  ? 'A casual game is hosted for this ground reservation.'
+                  : 'Want to play with others? Host an open casual game for this booked slot and invite players!'}
+              </p>
+            </div>
+            {booking.casual_games_count > 0 ? (
+              <Link to={`/casual-games/${booking.casual_game_id}`}>
+                <PsButton variant="secondary">View Casual Game</PsButton>
+              </Link>
+            ) : (
+              <Link to={`/casual-games/create?booking_id=${booking.id}`}>
+                <PsButton>Host Casual Game</PsButton>
+              </Link>
+            )}
+          </div>
         </PsCard>
       )}
 
@@ -344,7 +399,7 @@ export default function BookingDetailsPage() {
         <PsCard className="p-6 border-gold/40 bg-gold/5">
           <h3 className="text-lg font-serif font-bold text-primary">Advance Refund</h3>
           <p className="mt-1 text-sm text-secondary">
-            Your booking was cancelled more than 2 hours before the slot. Your advance payment of ₹{booking.advance_amount} is eligible for a refund.
+            Your booking was cancelled more than 2 hours before the slot. Your advance payment of {formatCurrency(booking.advance_amount)} is eligible for a refund.
           </p>
           {refundError && <PsAlert variant="error" className="mt-4">{refundError}</PsAlert>}
           <div className="mt-5">

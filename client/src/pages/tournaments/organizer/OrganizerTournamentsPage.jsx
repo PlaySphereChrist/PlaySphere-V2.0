@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../../../lib/api';
+import { deleteTournament, listTournaments } from '../../../features/tournaments/api';
 import { useAuth } from '../../../store/AuthContext';
 import {
   PsButton,
@@ -24,9 +24,11 @@ export default function OrganizerTournamentsPage() {
   const fetchTournaments = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await api.get(`/tournaments?organizer_user_id=${user.id}`);
-      const owned = (res.data.tournaments || []).filter(t => t.organizer_user_id === user.id);
-      setTournaments(owned);
+      const res = await listTournaments(`organizer_user_id=${encodeURIComponent(user.id)}`);
+      const managed = (res.data.tournaments || []).filter(
+        t => t.organizer_user_id === user.id || t.co_organizer_user_id === user.id
+      );
+      setTournaments(managed);
     } catch (err) {
       setError(err.message || 'Failed to load managed tournaments');
     } finally {
@@ -41,7 +43,7 @@ export default function OrganizerTournamentsPage() {
     setDeletingId(confirmDelete.id);
     setConfirmDelete(null);
     try {
-      await api.delete(`/tournaments/${confirmDelete.id}`);
+      await deleteTournament(confirmDelete.id);
       setTournaments(prev => prev.filter(t => t.id !== confirmDelete.id));
     } catch (err) {
       setError(err.message || 'Failed to delete tournament');
@@ -106,7 +108,7 @@ export default function OrganizerTournamentsPage() {
       ) : tournaments.length === 0 ? (
         <PsEmpty
           title="No tournaments"
-          message="You haven't created any tournaments yet."
+          message="You haven't created or co-organized any tournaments yet."
           action={
             <Link to="/organizer/tournaments/new">
               <PsButton>Create Tournament</PsButton>
@@ -115,47 +117,57 @@ export default function OrganizerTournamentsPage() {
         />
       ) : (
         <div className="space-y-4">
-          {tournaments.map(tournament => (
-            <PsCard key={tournament.id} className="hover:border-maroon/50 transition overflow-hidden">
-              <div className="flex flex-col sm:flex-row">
-                <Link to={`/organizer/tournaments/${tournament.id}/manage`} className="flex-1 px-6 py-5 hover:bg-pill-hover transition">
-                  <div className="flex items-start justify-between gap-4">
-                    <h3 className="text-lg font-serif font-bold text-primary hover:text-maroon transition line-clamp-1">
-                      {tournament.name}
-                    </h3>
-                    <PsBadge variant={getStatusBadgeVariant(tournament.status)} className="shrink-0">
-                      {getStatusLabel(tournament.status)}
-                    </PsBadge>
-                  </div>
-                  <div className="mt-2 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
-                    <p className="flex items-center gap-1.5 text-sm text-secondary">
-                      <span className="text-muted">🏆</span>
-                      {tournament.sport_name} • {tournament.format.replace(/_/g, ' ')}
-                    </p>
-                    <p className="flex items-center gap-1.5 text-xs text-muted">
-                      <span className="text-muted">📅</span>
-                      Created {new Date(tournament.created_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                </Link>
+          {tournaments.map(tournament => {
+            const isCoOrganizer = tournament.co_organizer_user_id === user.id && tournament.organizer_user_id !== user.id;
+            return (
+              <PsCard key={tournament.id} className="hover:border-maroon/50 transition overflow-hidden">
+                <div className="flex flex-col sm:flex-row">
+                  <Link to={`/organizer/tournaments/${tournament.id}/manage`} className="flex-1 px-6 py-5 hover:bg-pill-hover transition">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-lg font-serif font-bold text-primary hover:text-maroon transition line-clamp-1">
+                          {tournament.name}
+                        </h3>
+                        {isCoOrganizer && (
+                          <PsBadge variant="default" className="text-xs bg-accent-gold/15 text-accent-gold border-accent-gold/30">
+                            Co-Organizer
+                          </PsBadge>
+                        )}
+                      </div>
+                      <PsBadge variant={getStatusBadgeVariant(tournament.status)} className="shrink-0">
+                        {getStatusLabel(tournament.status)}
+                      </PsBadge>
+                    </div>
+                    <div className="mt-2 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
+                      <p className="flex items-center gap-1.5 text-sm text-secondary">
+                        <span className="text-muted">🏆</span>
+                        {tournament.sport_name} • {tournament.format.replace(/_/g, ' ')}
+                      </p>
+                      <p className="flex items-center gap-1.5 text-xs text-muted">
+                        <span className="text-muted">📅</span>
+                        Created {new Date(tournament.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                  </Link>
 
-                {/* Delete action — only shown for draft tournaments */}
-                {tournament.status === 'draft' && (
-                  <div className="px-6 pb-4 sm:p-5 sm:border-l border-t sm:border-t-0 border-border bg-pill flex items-center justify-end sm:justify-center">
-                    <PsButton
-                      variant="danger"
-                      size="sm"
-                      onClick={() => setConfirmDelete(tournament)}
-                      disabled={deletingId === tournament.id}
-                      className="bg-transparent text-error hover:bg-error/10 border border-error/50"
-                    >
-                      {deletingId === tournament.id ? 'Deleting…' : 'Delete'}
-                    </PsButton>
-                  </div>
-                )}
-              </div>
-            </PsCard>
-          ))}
+                  {/* Delete action — only shown for draft tournaments owned by primary organizer */}
+                  {tournament.status === 'draft' && !isCoOrganizer && (
+                    <div className="px-6 pb-4 sm:p-5 sm:border-l border-t sm:border-t-0 border-border bg-pill flex items-center justify-end sm:justify-center">
+                      <PsButton
+                        variant="danger"
+                        size="sm"
+                        onClick={() => setConfirmDelete(tournament)}
+                        disabled={deletingId === tournament.id}
+                        className="bg-transparent text-error hover:bg-error/10 border border-error/50"
+                      >
+                        {deletingId === tournament.id ? 'Deleting…' : 'Delete'}
+                      </PsButton>
+                    </div>
+                  )}
+                </div>
+              </PsCard>
+            );
+          })}
         </div>
       )}
     </div>

@@ -12,4 +12,7 @@ router.get('/', asyncHandler(ctrl.listWaitlist));
 // GET    /api/tournaments/:tournamentId/waitlist/my
 router.get('/my', asyncHandler(ctrl.getMyWaitlistEntry));
 
+// DELETE /api/tournaments/:tournamentId/waitlist/my
+router.delete('/my', asyncHandler(ctrl.cancelMyWaitlistEntry));
+
 module.exports = router;

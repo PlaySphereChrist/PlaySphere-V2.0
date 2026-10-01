@@ -39,3 +39,29 @@ exports.cancelMatch = async (req, res) => {
   const match = await matchesService.cancelMatch(req.params.matchId, req.body, req.user);
   res.status(200).json({ success: true, data: { match } });
 };
+
+// Captain Score Reports
+exports.getMatchScoreReports = async (req, res) => {
+  const reports = await matchesService.getMatchScoreReports(req.params.matchId, req.user);
+  res.status(200).json({ success: true, data: { reports } });
+};
+
+exports.submitMatchScoreReport = async (req, res) => {
+  const report = await matchesService.submitMatchScoreReport(req.params.matchId, req.body, req.user);
+  res.status(201).json({ success: true, data: { report } });
+};
+
+exports.confirmMatchScoreReport = async (req, res) => {
+  const result = await matchesService.confirmMatchScoreReport(req.params.matchId, req.params.reportId, req.user);
+  res.status(200).json({ success: true, data: result });
+};
+
+exports.rejectMatchScoreReport = async (req, res) => {
+  const report = await matchesService.rejectMatchScoreReport(req.params.matchId, req.params.reportId, req.body?.reason, req.user);
+  res.status(200).json({ success: true, data: { report } });
+};
+
+exports.recordMatchScore = async (req, res) => {
+  const match = await matchesService.recordMatchScore(req.params.matchId, req.body, req.user);
+  res.status(200).json({ success: true, data: { match } });
+};

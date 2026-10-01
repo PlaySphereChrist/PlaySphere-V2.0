@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../lib/api';
+import {
+  createPlayerSportProfile,
+  deletePlayerSportProfile,
+  getMyPlayerProfile,
+  getMyPlayerSportProfiles,
+  updatePlayerSportProfile,
+} from '../features/player-profiles/api';
+import { getSports } from '../features/sports/api';
 import {
   PsButton,
   PsCard,
@@ -69,7 +76,7 @@ function AddSportForm({ sports, existingSportIds, onSuccess, onCancel }) {
       if (formData.years_of_experience !== '') {
         payload.years_of_experience = Number(formData.years_of_experience);
       }
-      const res = await api.post('/player-profiles/me/sports', payload);
+      const res = await createPlayerSportProfile(payload);
       onSuccess(res.data.profile);
     } catch (err) {
       if (err.status === 409) {
@@ -213,7 +220,7 @@ function EditSportForm({ profile, onSuccess, onCancel }) {
         payload.years_of_experience =
           formData.years_of_experience !== '' ? Number(formData.years_of_experience) : null;
       }
-      const res = await api.patch(`/player-profiles/me/sports/${profile.id}`, payload);
+      const res = await updatePlayerSportProfile(profile.id, payload);
       onSuccess(res.data.profile);
     } catch (err) {
       setError(err.message || 'Failed to update sport profile.');
@@ -448,7 +455,7 @@ export default function SportsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await api.get('/sports');
+        const res = await getSports();
         setSports(res.data.sports || []);
       } catch (err) {
         setCatalogError(err.message || 'Failed to load sports catalog.');
@@ -461,7 +468,7 @@ export default function SportsPage() {
   const loadMyProfiles = useCallback(async () => {
     setLoadingProfiles(true);
     try {
-      const profileRes = await api.get('/player-profiles/me');
+      const profileRes = await getMyPlayerProfile();
       if (!profileRes.data.profile) {
         setHasPlayerProfile(false);
         setMyProfiles([]);
@@ -469,7 +476,7 @@ export default function SportsPage() {
         return;
       }
 
-      const res = await api.get('/player-profiles/me/sports');
+      const res = await getMyPlayerSportProfiles();
       setMyProfiles(res.data.profiles || []);
       setHasPlayerProfile(true);
     } catch (err) {
@@ -512,7 +519,7 @@ export default function SportsPage() {
     if (!deletingProfile) return;
     setIsDeleting(true);
     try {
-      await api.delete(`/player-profiles/me/sports/${deletingProfile.id}`);
+      await deletePlayerSportProfile(deletingProfile.id);
       setMyProfiles((prev) => prev.filter((p) => p.id !== deletingProfile.id));
       setSuccessMsg(`${deletingProfile.sport_name} removed from your profile.`);
       setDeletingProfile(null);

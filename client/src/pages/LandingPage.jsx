@@ -1,355 +1,430 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../store/AuthContext';
-import { useTheme } from '../store/ThemeContext';
 import {
-  Trophy, Users, MapPin, Swords, Moon, Sun, ChevronDown
+  ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, CalendarDays, ChevronDown,
+  ChevronRight, MapPin, Search, Trophy, Users
 } from 'lucide-react';
-// lucide-react v1 removed brand/logo icons (trademark reasons), so social
-// icons come from react-icons instead.
-import { FaInstagram, FaFacebook, FaXTwitter, FaYoutube, FaLinkedin } from 'react-icons/fa6';
+import Navbar from '../components/Navbar';
+import { listGrounds } from '../features/grounds/api';
+import { listCasualGames } from '../features/casual-games/api';
+import { getSports } from '../features/sports/api';
+import { listTournaments } from '../features/tournaments/api';
+import { useAuth } from '../store/AuthContext';
+import { formatDate, formatDateTime } from '../utils/dateTime';
+import { resolveDemoImageUrl } from '../utils/demoImages';
+import './LandingPage.css';
 
-const NAV_ITEMS = [
-  { label: 'Tournaments', path: '/tournaments' },
-  { label: 'Community', path: '/community' },
-  { label: 'Sports', path: '/sports' },
-  { label: 'Casual Games', path: '/casual-games' },
-  { label: 'Teams', path: '/teams' },
-  { label: 'Grounds', path: '/grounds' },
-  { label: 'My Bookings', path: '/my-bookings' },
-];
+const SPORT_ORDER = ['badminton', 'football', 'cricket', 'swimming', 'tennis', 'table tennis', 'basketball', 'volleyball'];
+const EVENT_TIME_ZONE = 'Asia/Kolkata';
+const SPORT_ART = {
+  badminton: '/images/demo/grounds/realistic/ground-badminton.jpg',
+  football: '/images/demo/grounds/realistic/ground-football.jpg',
+  cricket: '/images/demo/grounds/realistic/ground-cricket.jpg',
+  basketball: '/images/demo/grounds/realistic/ground-basketball.jpg',
+  volleyball: '/images/demo/grounds/realistic/ground-volleyball.jpg',
+  default: '/images/demo/grounds/realistic/ground-multisport.jpg',
+};
+const SPORT_EMOJI = {
+  badminton: '🏸', football: '⚽', cricket: '🏏', swimming: '🏊',
+  tennis: '🎾', 'table tennis': '🏓', basketball: '🏀', volleyball: '🏐',
+};
+const TOURNAMENT_ART = {
+  football: '/images/demo/grounds/realistic/ground-football.jpg',
+  cricket: '/images/demo/grounds/realistic/ground-cricket.jpg',
+  basketball: '/images/demo/grounds/realistic/ground-basketball.jpg',
+  volleyball: '/images/demo/grounds/realistic/ground-volleyball.jpg',
+  badminton: '/images/demo/grounds/realistic/ground-badminton.jpg',
+};
 
-const GROUNDS = [
-  'Green Valley Turf', 'Riverside Sports Complex', 'City Arena',
-  'Sunset Ground', 'Elite Sports Park', 'Harbourline Courts', 'Oakfield Stadium',
-];
+function sportKey(name = '') {
+  return name.toLowerCase().trim();
+}
 
-const FAQS = [
-  {
-    q: 'How do I book a ground?',
-    a: 'Open the Grounds tab, pick a venue and a free slot, and confirm payment. Your booking shows up under My Bookings right away.',
-  },
-  {
-    q: 'Can I join a tournament without a team?',
-    a: 'Yes. Many tournaments accept solo sign-ups and place you with a team, or you can join an existing team looking for players.',
-  },
-  {
-    q: 'Is PlaySphere free to use?',
-    a: 'Browsing, registrations, and community features are free. You only pay when you book a ground or enter a paid tournament.',
-  },
-];
+function sportEmoji(name) {
+  return SPORT_EMOJI[sportKey(name)] || '🏆';
+}
 
-const SOCIALS = [
-  { icon: FaInstagram, label: 'Instagram', href: '/', hover: '#C1387A' },
-  { icon: FaFacebook, label: 'Facebook', href: '/', hover: '#3B5FA0' },
-  { icon: FaXTwitter, label: 'Twitter', href: '/', hover: '#3AA0E8' },
-  { icon: FaYoutube, label: 'YouTube', href: '/', hover: '#D33A3A' },
-  { icon: FaLinkedin, label: 'LinkedIn', href: '/', hover: '#3577B5' },
-];
+function sportArt(name) {
+  return SPORT_ART[sportKey(name)] || SPORT_ART.default;
+}
 
-/* ------------------------------------------------------------------ */
-/*  Logo mark — armillary-sphere motif echoing the PlaySphere wordmark  */
-/* ------------------------------------------------------------------ */
-function LogoMark({ size = 30 }) {
+function groundImage(ground) {
+  const firstImage = Array.isArray(ground.images) ? ground.images[0] : ground.images;
+  const image = typeof firstImage === 'string' ? firstImage : firstImage?.url || firstImage?.src;
+  if (image) return resolveDemoImageUrl(image, ground.id || ground.name);
+  return sportArt(ground.sports?.[0]?.name);
+}
+
+function tournamentImage(tournament) {
+  return resolveDemoImageUrl(tournament.banner_url, tournament.id || tournament.name) || TOURNAMENT_ART[sportKey(tournament.sport_name)] || SPORT_ART.default;
+}
+
+function displayPlace(value) {
+  if (!value) return 'Location to be announced';
+  return [value.city, value.state].filter(Boolean).join(', ') || value.city || value.address || 'Location to be announced';
+}
+
+function formatGameTime(game) {
+  if (!game.scheduled_at) return 'Time to be announced';
+  const options = { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: EVENT_TIME_ZONE };
+  const start = formatDateTime(game.scheduled_at, options);
+  const duration = Number(game.duration_minutes || 0);
+  if (!duration) return start;
+  const end = new Date(new Date(game.scheduled_at).getTime() + duration * 60_000);
+  return `${start} – ${formatDateTime(end, { hour: 'numeric', minute: '2-digit', timeZone: EVENT_TIME_ZONE })}`;
+}
+
+function safeList(response, key) {
+  return response?.data?.[key] || [];
+}
+
+function BrandMark() {
   return (
-    <svg width={size} height={size} viewBox="0 0 60 60" fill="none">
-      <circle cx="30" cy="30" r="27" stroke="var(--accent-gold)" strokeWidth="1.1" opacity="0.7" />
-      <ellipse cx="30" cy="30" rx="27" ry="10" stroke="var(--accent-maroon)" strokeWidth="1.3" />
-      <ellipse cx="30" cy="30" rx="10" ry="27" stroke="var(--accent-maroon)" strokeWidth="1.3" transform="rotate(28 30 30)" />
-      <circle cx="30" cy="30" r="3.2" fill="var(--accent-maroon)" />
+    <svg viewBox="0 0 36 36" width="100%" height="100%" fill="none" aria-hidden="true">
+      <circle cx="18" cy="18" r="17" stroke="var(--accent-maroon)" strokeWidth="1.5" />
+      <ellipse cx="18" cy="18" rx="17" ry="7" stroke="var(--accent-gold)" strokeWidth="1" />
+      <ellipse cx="18" cy="18" rx="7" ry="17" stroke="var(--accent-gold)" strokeWidth="1" />
     </svg>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Navbar — real routing: signed-in users go straight to the section, */
-/*  signed-out users are sent to /login with a message + return path.  */
-/* ------------------------------------------------------------------ */
-function Navbar({ darkMode, setDarkMode, user, onProtectedNav }) {
+function SectionTitle({ eyebrow, title, description, action, onAction }) {
   return (
-    <header
-      style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}
-      className="sticky top-0 z-40"
-    >
-      <div className="mx-auto max-w-7xl px-5 lg:px-8">
-        <div className="flex items-center gap-6 h-16">
-
-          <button
-  type="button"
-  onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-  className="inline-block"
->
-  <h3 style={{ fontFamily: "'Fraunces', serif", color: 'var(--text-primary)' }} className="text-2xl sm:text-3xl font-semibold tracking-tight">
-    PlaySphere
-  </h3>
-</button>
-
-          {/* Running ground ticker — sits right after the wordmark */}
-          <div
-            className="hidden md:block relative overflow-hidden flex-1 max-w-xs h-6"
-            style={{
-              maskImage: 'linear-gradient(90deg, transparent, black 12%, black 88%, transparent)',
-              WebkitMaskImage: 'linear-gradient(90deg, transparent, black 12%, black 88%, transparent)',
-            }}
-            aria-label="Grounds available now"
-          >
-            <div className="ps-marquee whitespace-nowrap text-xs tracking-wide" style={{ color: 'var(--text-secondary)' }}>
-              {[...GROUNDS, ...GROUNDS].map((g, i) => (
-                <span key={i} className="mx-4 inline-flex items-center gap-1.5">
-                  <MapPin size={15} style={{ color: 'var(--accent-gold)' }} />
-                  {g}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          <nav className="hidden lg:flex items-center gap-1 ml-auto overflow-x-auto">
-            {NAV_ITEMS.map(({ label, path }) => (
-              <button
-                key={label}
-                onClick={() => onProtectedNav(path, label)}
-                style={{ color: 'var(--text-secondary)' }}
-                className="px-3.5 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors duration-150"
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pill-hover)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
-
-          <button
-            onClick={() => setDarkMode((d) => !d)}
-            aria-label="Toggle dark mode"
-            style={{ border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-            className="ml-2 shrink-0 w-9 h-9 rounded-full flex items-center justify-center hover:brightness-110 transition"
-          >
-            {darkMode ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-
-          {!user ? (
-            <Link
-              to="/login"
-              style={{ background: 'var(--accent-maroon)' }}
-              className="hidden sm:inline-flex ml-2 shrink-0 rounded-full px-4 py-1.5 text-sm font-semibold text-white hover:brightness-110"
-            >
-              Log in
-            </Link>
-          ) : null}
-        </div>
-
-        <div className="lg:hidden flex gap-1 pb-3 overflow-x-auto">
-          {NAV_ITEMS.map(({ label, path }) => (
-            <button
-              key={label}
-              onClick={() => onProtectedNav(path, label)}
-              style={{ border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
-              className="px-3 py-1 rounded-full text-xs whitespace-nowrap"
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+    <div className="home-section-heading">
+      <div>
+        {eyebrow && <p className="home-eyebrow">{eyebrow}</p>}
+        <h2>{title}</h2>
+        {description && <p className="home-section-description">{description}</p>}
       </div>
-    </header>
+      {action && (
+        <button className="home-text-link" type="button" onClick={onAction}>
+          {action}<ChevronRight size={17} aria-hidden="true" />
+        </button>
+      )}
+    </div>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  FAQ accordion                                                       */
-/* ------------------------------------------------------------------ */
-function Faq() {
-  const [open, setOpen] = useState(0);
+function RailControls({ railRef, label }) {
+  const scroll = (direction) => {
+    railRef.current?.scrollBy({ left: direction * Math.max(280, railRef.current.clientWidth * 0.72), behavior: 'smooth' });
+  };
+
   return (
-    <section className="mx-auto max-w-3xl px-6 py-24">
-      <h2
-        style={{ fontFamily: "'Fraunces', serif", color: 'var(--text-primary)' }}
-        className="text-3xl font-semibold mb-8 text-center"
-      >
-        Questions, answered
-      </h2>
-      <div style={{ borderTop: '1px solid var(--border)' }}>
-        {FAQS.map((item, i) => {
-          const expanded = open === i;
-          return (
-            <div key={item.q} style={{ borderBottom: '1px solid var(--border)' }}>
-              <button
-                onClick={() => setOpen(expanded ? -1 : i)}
-                className="w-full flex items-center justify-between py-5 text-left"
-              >
-                <span style={{ color: 'var(--text-primary)' }} className="font-medium">{item.q}</span>
-                <ChevronDown
-                  size={18}
-                  style={{ color: 'var(--accent-gold)', transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}
-                />
-              </button>
-              <div style={{ maxHeight: expanded ? 200 : 0, overflow: 'hidden', transition: 'max-height 0.25s ease' }}>
-                <p style={{ color: 'var(--text-secondary)' }} className="pb-5 text-sm leading-6">{item.a}</p>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
+    <div className="home-rail-controls" aria-label={`${label} carousel controls`}>
+      <button type="button" aria-label={`Scroll ${label} backward`} onClick={() => scroll(-1)}><ArrowLeft size={18} /></button>
+      <button type="button" aria-label={`Scroll ${label} forward`} onClick={() => scroll(1)}><ArrowRight size={18} /></button>
+    </div>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Footer                                                              */
-/* ------------------------------------------------------------------ */
+function HomeEmpty({ title, message, loading = false }) {
+  return (
+    <div className={`home-empty${loading ? ' is-loading' : ''}`}>
+      {loading ? <span className="home-spinner" aria-hidden="true" /> : <Trophy size={20} aria-hidden="true" />}
+      <div><strong>{title}</strong><span>{message}</span></div>
+    </div>
+  );
+}
+
 function Footer() {
-  const [hovered, setHovered] = useState(null);
   return (
-    <footer style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
-      <div className="mx-auto max-w-7xl px-6 lg:px-8 py-10 flex flex-col sm:flex-row items-center justify-between gap-6">
-        <div className="flex items-center gap-2">
-          <LogoMark size={22} />
-          <span style={{ fontFamily: "'Fraunces', serif", color: 'var(--text-primary)' }} className="font-semibold">
-            PlaySphere
-          </span>
-          <span style={{ color: 'var(--text-secondary)' }} className="text-xs ml-2">Discover. Play. Compete.</span>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {SOCIALS.map(({ icon: Icon, label, hover }) => (
-            <button
-              key={label}
-              type="button"
-              aria-label={label}
-              onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-              onMouseEnter={() => setHovered(label)}
-              onMouseLeave={() => setHovered(null)}
-              style={{
-                border: '1px solid var(--border)',
-                color: hovered === label ? '#fff' : 'var(--text-secondary)',
-                background: hovered === label ? hover : 'transparent',
-                transform: hovered === label ? 'translateY(-2px)' : 'none',
-              }}
-              className="w-9 h-9 rounded-full flex items-center justify-center transition-all duration-150"
-            >
-              <Icon size={16} />
-            </button>
-          ))}
-        </div>
-
-        <p style={{ color: 'var(--text-secondary)' }} className="text-xs">
-          © {new Date().getFullYear()} PlaySphere. All rights reserved.
-        </p>
-      </div>
+    <footer className="home-footer">
+      <Link className="home-brand" to="/" aria-label="PlaySphere home"><span className="home-brand-mark"><BrandMark /></span> PlaySphere</Link>
+      <p>Find your people. Find your game.</p>
+      <span>© {new Date().getFullYear()} PlaySphere</span>
     </footer>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Features (unchanged content, only lucide icons swapped for names)  */
-/* ------------------------------------------------------------------ */
-const FEATURES = [
-  { name: 'Tournaments', description: 'Find and register for local tournaments. Track schedules, waitlists, and eligibility rules easily.', icon: Trophy },
-  { name: 'Casual Games', description: 'Looking for a quick match? Find local pickup games, join open spots, and meet new players.', icon: Swords },
-  { name: 'Ground Booking', description: 'Book premium sports venues instantly. Check availability, pay securely, and manage your reservations.', icon: MapPin },
-  { name: 'Team Management', description: 'Build your roster, manage players, and register your whole team for leagues with a single click.', icon: Users },
-];
-
-/* ------------------------------------------------------------------ */
-/*  Root                                                                */
-/* ------------------------------------------------------------------ */
 export default function LandingPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { dark: darkMode, toggle: toggleDark } = useTheme();
+  const [grounds, setGrounds] = useState([]);
+  const [games, setGames] = useState([]);
+  const [sports, setSports] = useState([]);
+  const [tournaments, setTournaments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [searchText, setSearchText] = useState('');
+  const [selectedSport, setSelectedSport] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [apiErrors, setApiErrors] = useState({});
 
-  // Any protected nav item: signed-in users go straight there, signed-out
-  // users are sent to /login with a message and the page they were after.
-  function onProtectedNav(path, label) {
-    if (user) {
-      navigate(path);
-    } else {
-      navigate('/login', { state: { message: `Please log in to access ${label}`, from: path } });
+  const venueRail = useRef(null);
+  const gameRail = useRef(null);
+  const tournamentRail = useRef(null);
+  const guideRail = useRef(null);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    let active = true;
+    const loadDiscovery = async () => {
+      const results = await Promise.allSettled([
+        listGrounds(),
+        listCasualGames('status=open&upcoming_only=true'),
+        getSports(),
+        listTournaments(),
+      ]);
+      if (!active) return;
+      const errors = {};
+      if (results[0].status === 'fulfilled') setGrounds(safeList(results[0].value, 'grounds'));
+      else errors.grounds = true;
+      if (results[1].status === 'fulfilled') setGames(safeList(results[1].value, 'games'));
+      else errors.games = true;
+      if (results[2].status === 'fulfilled') setSports(safeList(results[2].value, 'sports'));
+      else errors.sports = true;
+      if (results[3].status === 'fulfilled') {
+        setTournaments(safeList(results[3].value, 'tournaments').filter((tournament) => tournament.status === 'registration_open'));
+      }
+      else errors.tournaments = true;
+      setApiErrors(errors);
+      setLoading(false);
+    };
+    loadDiscovery();
+    return () => { active = false; };
+  }, []);
+
+  const orderedSports = useMemo(() => {
+    const rank = (sport) => {
+      const index = SPORT_ORDER.indexOf(sportKey(sport.name));
+      return index < 0 ? SPORT_ORDER.length : index;
+    };
+    return [...sports].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).slice(0, 8);
+  }, [sports]);
+
+  const filteredGrounds = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+    return grounds.filter((ground) => {
+      const matchesText = !query || [ground.name, ground.address, ground.city, ground.state]
+        .filter(Boolean).join(' ').toLowerCase().includes(query);
+      const matchesSport = !selectedSport || ground.sports?.some((sport) => sport.id === selectedSport);
+      return matchesText && matchesSport;
+    });
+  }, [grounds, searchText, selectedSport]);
+
+  const venueSuggestions = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+    if (!query || query.length < 2) return [];
+    const seen = new Set();
+    const results = [];
+    for (const ground of grounds) {
+      // City suggestion
+      if (ground.city) {
+        const city = ground.city.trim();
+        const key = `city:${city.toLowerCase()}`;
+        if (!seen.has(key) && city.toLowerCase().includes(query)) {
+          seen.add(key);
+          results.push({ type: 'city', label: city, sub: ground.state || '' });
+        }
+      }
+      // Venue name suggestion
+      if (ground.name) {
+        const name = ground.name.trim();
+        const key = `venue:${name.toLowerCase()}`;
+        if (!seen.has(key) && name.toLowerCase().includes(query)) {
+          seen.add(key);
+          results.push({ type: 'venue', label: name, sub: ground.city || '' });
+        }
+      }
+      if (results.length >= 8) break;
     }
-  }
+    return results;
+  }, [grounds, searchText]);
+
+  const goTo = (path, label = 'this section') => {
+    if (user) navigate(path);
+    else navigate('/login', { state: { message: `Log in to continue to ${label}`, from: path } });
+  };
+
+  const scrollTo = (id) => {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const submitSearch = (event) => {
+    event.preventDefault();
+    scrollTo('venues');
+  };
+
+  const guideCards = [
+    {
+      category: 'GET STARTED', title: 'Your first game on PlaySphere',
+      summary: 'Find a nearby game, check the details, and join a team of local players.',
+      image: '/images/demo/grounds/realistic/ground-badminton.jpg', action: 'Find a game', path: '/casual-games',
+    },
+    {
+      category: 'TOURNAMENTS', title: 'A better way to compete',
+      summary: 'Discover open registrations and follow your tournament from fixtures to final.',
+      image: '/images/demo/grounds/realistic/ground-football.jpg', action: 'Explore tournaments', path: '/tournaments',
+    },
+    {
+      category: 'VENUES', title: 'Make match day happen',
+      summary: 'Browse local grounds and find a place that fits your sport and your squad.',
+      image: '/images/demo/grounds/realistic/ground-multisport.jpg', action: 'Browse venues', path: '/grounds',
+    },
+  ];
 
   return (
-    <div style={{ minHeight: '100vh' }}>
-      <style>{`
-        @keyframes ps-marquee {
-          from { transform: translateX(0); }
-          to { transform: translateX(-50%); }
-        }
-        .ps-marquee { animation: ps-marquee 18s linear infinite; }
-      `}</style>
+    <main className="playsphere-home">
+      <Navbar />
 
-      <div className="ps-landing bg-background" style={{ minHeight: '100vh' }}>
-        <Navbar darkMode={darkMode} setDarkMode={toggleDark} user={user} onProtectedNav={onProtectedNav} />
-
-        <div className="relative isolate px-6 pt-14 lg:px-8 overflow-hidden">
-          <svg className="absolute -top-24 left-1/2 -translate-x-1/2 -z-10 opacity-[0.15]" width="760" height="760" viewBox="0 0 760 760">
-            <circle cx="380" cy="380" r="360" stroke="var(--accent-maroon)" strokeWidth="1" fill="none" />
-            <ellipse cx="380" cy="380" rx="360" ry="140" stroke="var(--accent-gold)" strokeWidth="1" fill="none" />
-            <ellipse cx="380" cy="380" rx="140" ry="360" stroke="var(--accent-gold)" strokeWidth="1" fill="none" transform="rotate(30 380 380)" />
-          </svg>
-
-          <div className="mx-auto max-w-2xl py-28 sm:py-40 text-center">
-           <Link to="/">
-  <h3 style={{ fontFamily: "'Fraunces', serif", color: 'var(--text-primary)' }} className="text-4xl sm:text-6xl font-semibold tracking-tight">
-    PlaySphere
-  </h3>
-</Link>
-            <p style={{ color: 'var(--text-secondary)' }} className="mt-6 text-lg leading-8">
-              The complete ecosystem for amateur sports. Manage teams, book grounds,
-              join casual games, and compete in tournaments — all in one place.
-            </p>
-            <div className="mt-10 flex items-center justify-center gap-x-6">
-              {user ? (
-                <Link
-                  to="/tournaments"
-                  style={{ background: 'var(--accent-maroon)' }}
-                  className="rounded-full px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:brightness-110"
-                >
-                  Go to App
-                </Link>
-              ) : (
-                <>
-                  <Link
-                    to="/signup"
-                    style={{ background: 'var(--accent-maroon)' }}
-                    className="rounded-full px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:brightness-110"
-                  >
-                    Create Account
-                  </Link>
-                  <Link to="/login" style={{ color: 'var(--text-primary)' }} className="text-sm font-semibold">
-                    Log in <span aria-hidden="true">→</span>
-                  </Link>
-                </>
+      <section className="home-hero">
+        <div className="home-hero-art" aria-hidden="true" />
+        <div className="home-hero-content">
+          <p className="home-hero-kicker"><span /> THE HOME OF LOCAL SPORT</p>
+          <h1>Find your next<br /><em>reason to play.</em></h1>
+          <p className="home-hero-copy">Book a ground, join a game, or take your team all the way. Your next match starts here.</p>
+          <form className="home-search" onSubmit={submitSearch}>
+            <label className="home-search-field">
+              <MapPin size={18} aria-hidden="true" />
+              <span className="sr-only">Venue or city</span>
+              <input
+                value={searchText}
+                onChange={(event) => { setSearchText(event.target.value); setShowSuggestions(true); }}
+                onFocus={() => setShowSuggestions(true)}
+                onBlur={() => window.setTimeout(() => setShowSuggestions(false), 150)}
+                onKeyDown={(event) => { if (event.key === 'Escape') setShowSuggestions(false); }}
+                placeholder="Venue or city"
+                autoComplete="off"
+              />
+              {showSuggestions && venueSuggestions.length > 0 && (
+                <ul className="home-search-suggestions" role="listbox" aria-label="Venue suggestions">
+                  {venueSuggestions.map((suggestion, index) => (
+                    <li
+                      key={index}
+                      role="option"
+                      tabIndex={-1}
+                      className="home-search-suggestion-item"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        setSearchText(suggestion.label);
+                        setShowSuggestions(false);
+                        window.setTimeout(() => scrollTo('venues'), 80);
+                      }}
+                    >
+                      {suggestion.type === 'city' ? <MapPin size={14} aria-hidden="true" /> : <Trophy size={14} aria-hidden="true" />}
+                      <strong>{suggestion.label}</strong>
+                      {suggestion.sub && <span>{suggestion.sub}</span>}
+                    </li>
+                  ))}
+                </ul>
               )}
-            </div>
-          </div>
+            </label>
 
-          <div className="mx-auto max-w-7xl px-6 lg:px-8 pb-28">
-            <div className="mx-auto max-w-2xl text-center">
-              <h2 style={{ color: 'var(--accent-maroon)' }} className="text-sm font-semibold">Everything you need</h2>
-              <p style={{ fontFamily: "'Fraunces', serif", color: 'var(--text-primary)' }} className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
-                Unleash your potential
-              </p>
-            </div>
-            <div className="mx-auto mt-16 grid max-w-2xl grid-cols-1 gap-x-8 gap-y-12 sm:grid-cols-2 lg:max-w-none lg:grid-cols-4">
-              {FEATURES.map((feature) => (
-                <div key={feature.name} className="flex flex-col">
-                  <dt className="flex items-center gap-2.5 text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
-                    <feature.icon size={18} style={{ color: 'var(--accent-gold)' }} />
-                    {feature.name}
-                  </dt>
-                  <dd className="mt-3 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>
-                    {feature.description}
-                  </dd>
-                </div>
-              ))}
-            </div>
-          </div>
+            <label className="home-search-field home-search-sport">
+              <Trophy size={18} aria-hidden="true" />
+              <span className="sr-only">Sport</span>
+              <select value={selectedSport} onChange={(event) => setSelectedSport(event.target.value)}>
+                <option value="">Any sport</option>
+                {sports.map((sport) => <option key={sport.id} value={sport.id}>{sport.name}</option>)}
+              </select>
+              <ChevronDown size={15} aria-hidden="true" />
+            </label>
+            <button className="home-search-button" type="submit"><Search size={18} /> Explore</button>
+          </form>
+          <div className="home-hero-meta"><span><Users size={16} /> Made for every kind of player</span><button type="button" onClick={() => scrollTo('venues')}>See what’s happening <ArrowDown size={15} /></button></div>
         </div>
+        <div className="home-hero-caption"><span>PLAY TOGETHER</span><span>PLAY MORE</span></div>
+      </section>
 
-        <Faq />
-        <Footer />
+      <div className="home-content">
+        <section className="home-section home-venues-section" id="venues">
+          <SectionTitle eyebrow="FIND YOUR HOME COURT" title="Book venues" description="Good games start with a great place to play." action="See all venues" onAction={() => goTo('/grounds', 'venues')} />
+          {loading ? <HomeEmpty loading title="Finding venues" message="Loading active grounds near you…" /> : apiErrors.grounds ? <HomeEmpty title="Venues aren’t available right now" message="Please try again in a little while." /> : filteredGrounds.length === 0 ? <HomeEmpty title="No venues match those filters" message="Try another city, venue name, or sport." /> : (
+            <>
+              <div className="home-rail" ref={venueRail} aria-label="Available sports venues">
+                {filteredGrounds.slice(0, 12).map((ground) => (
+                  <button className="venue-card" key={ground.id} type="button" onClick={() => goTo(`/grounds/${ground.id}`, 'this venue')}>
+                    <span className="venue-card-image"><img src={groundImage(ground)} alt={`${ground.name} demo venue`} loading="lazy" /><span className="venue-image-sports">{ground.sports?.slice(0, 2).map((sport) => <span key={sport.id}>{sportEmoji(sport.name)} {sport.name}</span>)}</span></span>
+                    <span className="venue-card-body"><strong>{ground.name}</strong><span className="venue-location"><MapPin size={14} />{displayPlace(ground)}</span><span className="venue-card-footer"><span>{ground.sports?.length ? `${ground.sports.length} ${ground.sports.length === 1 ? 'sport' : 'sports'}` : 'Sports venue'}</span><span>View venue <ArrowUpRight size={14} /></span></span></span>
+                  </button>
+                ))}
+              </div>
+              {filteredGrounds.length > 12 && <p className="home-result-count">Showing 12 of {filteredGrounds.length} venues. Use “See all venues” to browse the full list.</p>}
+              <RailControls railRef={venueRail} label="venues" />
+            </>
+          )}
+        </section>
+
+        <section className="home-section" id="games">
+          <SectionTitle eyebrow="YOUR PEOPLE ARE PLAYING" title="Discover games" description="Drop into a local game and meet your next teammates." action="See all games" onAction={() => goTo('/casual-games', 'casual games')} />
+          {loading ? <HomeEmpty loading title="Looking for games" message="Loading upcoming open games…" /> : apiErrors.games ? <HomeEmpty title="Games aren’t available right now" message="Please try again in a little while." /> : games.length === 0 ? <HomeEmpty title="No open games yet" message="Check back soon for games looking for players." /> : (
+            <>
+              <div className="home-rail home-game-rail" ref={gameRail} aria-label="Upcoming casual games">
+                {games.slice(0, 10).map((game) => {
+                  const joined = Number(game.current_participants || 0);
+                  const max = Number(game.max_participants || 0);
+                  return (
+                    <button className="game-card" key={game.id} type="button" onClick={() => goTo(`/casual-games/${game.id}`, 'this game')}>
+                      <span className="game-card-top"><span>{sportEmoji(game.sport_name)} {game.sport_name}</span><span>{game.skill_level || 'All levels'}</span></span>
+                      <strong className="game-card-title">{game.title}</strong>
+                      <span className="game-host"><span className="game-avatar">{(game.creator_name || 'P').slice(0, 1).toUpperCase()}</span><span>Hosted by <b>{game.creator_name || 'PlaySphere player'}</b></span></span>
+                      <span className="game-card-info"><CalendarDays size={15} />{formatGameTime(game)}</span>
+                      <span className="game-card-info"><MapPin size={15} />{game.ground_name || game.location_name || game.ground_city || 'Location to be announced'}</span>
+                      <span className="game-card-footer"><span className="game-spots">{max > 0 ? `${joined}/${max} playing` : `${joined} playing`}</span><span>View game <ArrowUpRight size={14} /></span></span>
+                    </button>
+                  );
+                })}
+              </div>
+              <RailControls railRef={gameRail} label="games" />
+            </>
+          )}
+        </section>
+
+        <section className="home-sports-panel" id="sports">
+          <SectionTitle eyebrow="PICK YOUR PLAY" title="Popular sports" description="From a friendly rally to a full-on final." action="Explore sports" onAction={() => goTo('/sports', 'sports')} />
+          {orderedSports.length === 0 ? (
+            <div className="home-sport-grid">
+              {SPORT_ORDER.slice(0, 6).map((name) => <button className="sport-tile" key={name} type="button" onClick={() => goTo('/sports', 'sports')}><img src={sportArt(name)} alt="" loading="lazy" /><span className="sport-tile-shade" /><span className="sport-tile-name"><span>{sportEmoji(name)}</span>{name}</span></button>)}
+            </div>
+          ) : (
+            <div className="home-sport-grid">
+              {orderedSports.slice(0, 6).map((sport) => <button className="sport-tile" key={sport.id} type="button" onClick={() => { setSelectedSport(sport.id); scrollTo('venues'); }}><img src={sportArt(sport.name)} alt="" loading="lazy" /><span className="sport-tile-shade" /><span className="sport-tile-name"><span>{sportEmoji(sport.name)}</span>{sport.name}</span></button>)}
+            </div>
+          )}
+        </section>
+
+        <section className="home-promo-strip" aria-label="Explore PlaySphere">
+          <article className="home-promo home-promo-tournament"><Trophy size={24} /><p>Ready to compete?</p><h3>Make your next tournament count.</h3><button type="button" onClick={() => goTo('/tournaments', 'tournaments')}>Explore tournaments <ArrowUpRight size={16} /></button></article>
+          <article className="home-promo home-promo-game"><Users size={24} /><p>Better together</p><h3>Find players who love the game.</h3><button type="button" onClick={() => goTo('/casual-games', 'casual games')}>Find a game <ArrowUpRight size={16} /></button></article>
+          <article className="home-promo home-promo-venue"><MapPin size={24} /><p>Game on</p><h3>Your local court is waiting.</h3><button type="button" onClick={() => goTo('/grounds', 'venues')}>Browse venues <ArrowUpRight size={16} /></button></article>
+        </section>
+
+        <section className="home-section" id="tournaments">
+          <SectionTitle eyebrow="THE NEXT BIG MATCH" title="Open tournaments" description="Find your competition and put your team on the board." action="See all tournaments" onAction={() => goTo('/tournaments', 'tournaments')} />
+          {loading ? <HomeEmpty loading title="Finding tournaments" message="Loading open registrations…" /> : apiErrors.tournaments ? <HomeEmpty title="Tournaments aren’t available right now" message="Please try again in a little while." /> : tournaments.length === 0 ? <HomeEmpty title="No open tournaments yet" message="New competitions will show up here when registration opens." /> : (
+            <>
+              <div className="home-rail home-tournament-rail" ref={tournamentRail} aria-label="Open tournaments">
+                {tournaments.slice(0, 8).map((tournament) => (
+                  <button className="tournament-card" key={tournament.id} type="button" onClick={() => goTo(`/tournaments/${tournament.id}`, 'this tournament')}>
+                    <span className="tournament-card-image"><img src={tournamentImage(tournament)} alt={`${tournament.name} event artwork`} loading="lazy" /><span className="tournament-open-label"><span />Registration open</span></span>
+                    <span className="tournament-card-body"><span className="tournament-sport">{sportEmoji(tournament.sport_name)} {tournament.sport_name}</span><strong>{tournament.name}</strong><span><CalendarDays size={15} />{tournament.starts_at ? formatDate(tournament.starts_at, { day: 'numeric', month: 'short', year: 'numeric', timeZone: EVENT_TIME_ZONE }) : 'Dates to be announced'}{tournament.ends_at && ` – ${formatDate(tournament.ends_at, { day: 'numeric', month: 'short', timeZone: EVENT_TIME_ZONE })}`}</span><span><MapPin size={15} />{displayPlace(tournament)}</span><span className="tournament-card-footer"><span>{tournament.participation_type === 'team' ? 'Team event' : 'Individual event'}</span><span>Details <ArrowUpRight size={14} /></span></span></span>
+                  </button>
+                ))}
+              </div>
+              <RailControls railRef={tournamentRail} label="tournaments" />
+            </>
+          )}
+        </section>
+
+        <section className="home-guides-section" id="guides">
+          <SectionTitle eyebrow="A LITTLE INSPIRATION" title="PlaySphere guides" description="A few helpful pointers for making more of every match." action="More ways to play" onAction={() => goTo('/sports', 'sports')} />
+          <div className="home-rail home-guide-rail" ref={guideRail} aria-label="PlaySphere getting started guides">
+            {guideCards.map((guide) => (
+              <article className="guide-card" key={guide.title}>
+                <button className="guide-card-image" type="button" onClick={() => goTo(guide.path, guide.action)} aria-label={guide.action}><img src={guide.image} alt="" loading="lazy" /><span>{guide.category}</span></button>
+                <div className="guide-card-copy"><h3>{guide.title}</h3><p>{guide.summary}</p><button type="button" onClick={() => goTo(guide.path, guide.action)}>{guide.action}<ArrowUpRight size={15} /></button></div>
+              </article>
+            ))}
+          </div>
+          <RailControls railRef={guideRail} label="guides" />
+        </section>
+
+        <section className="home-bottom-cta">
+          <div><span>YOUR NEXT GAME IS OUT THERE</span><h2>So, what are you waiting for?</h2><p>Join your local sports community and make it a match.</p></div>
+          <Link to={user ? '/sports' : '/signup'}>{user ? 'Explore PlaySphere' : 'Get started'} <ArrowUpRight size={18} /></Link>
+        </section>
       </div>
-    </div>
+      <Footer />
+    </main>
   );
 }

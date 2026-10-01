@@ -1,6 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { api } from '../../lib/api';
+import {
+  addGroundSport,
+  createGroundSlot,
+  deleteGround,
+  deleteGroundSlot,
+  getGround,
+  getGroundSlots,
+  removeGroundSport,
+  updateGround,
+} from '../../features/grounds/api';
+import { getSports } from '../../features/sports/api';
+import { formatDate } from '../../utils/dateTime';
 import {
   PsButton,
   PsCard,
@@ -36,9 +47,9 @@ export default function AdminGroundDetailsPage() {
     try {
       setLoading(true);
       const [groundRes, sportsRes, slotsRes] = await Promise.all([
-        api.get(`/grounds/${groundId}`),
-        api.get('/sports'),
-        api.get(`/grounds/${groundId}/slots`)
+        getGround(groundId),
+        getSports(),
+        getGroundSlots(groundId)
       ]);
       setGround(groundRes.data.ground);
       setAllSports(sportsRes.data.sports);
@@ -57,7 +68,7 @@ export default function AdminGroundDetailsPage() {
 
   const handleToggleStatus = async () => {
     try {
-      await api.patch(`/grounds/${groundId}`, { is_active: !ground.is_active });
+      await updateGround(groundId, { is_active: !ground.is_active });
       fetchData();
     } catch (err) {
       window.alert(err.message);
@@ -69,7 +80,7 @@ export default function AdminGroundDetailsPage() {
     if (!selectedSportId) return;
     try {
       setSportError('');
-      await api.post(`/grounds/${groundId}/sports`, { sport_id: selectedSportId });
+      await addGroundSport(groundId, selectedSportId);
       setSelectedSportId('');
       fetchData();
     } catch (err) {
@@ -80,7 +91,7 @@ export default function AdminGroundDetailsPage() {
   const handleRemoveSport = async (sportId) => {
     if (!window.confirm('Remove this sport?')) return;
     try {
-      await api.delete(`/grounds/${groundId}/sports/${sportId}`);
+      await removeGroundSport(groundId, sportId);
       fetchData();
     } catch (err) {
       window.alert(err.message);
@@ -91,7 +102,7 @@ export default function AdminGroundDetailsPage() {
     e.preventDefault();
     try {
       setSlotError('');
-      await api.post(`/grounds/${groundId}/slots`, slotData);
+      await createGroundSlot(groundId, slotData);
       setSlotData({ slot_date: '', start_time: '', end_time: '', price: '', sport_id: '' });
       fetchData();
     } catch (err) {
@@ -102,7 +113,7 @@ export default function AdminGroundDetailsPage() {
   const handleDeleteSlot = async (slotId) => {
     if (!window.confirm('Delete this slot?')) return;
     try {
-      await api.delete(`/grounds/${groundId}/slots/${slotId}`);
+      await deleteGroundSlot(groundId, slotId);
       fetchData();
     } catch (err) {
       window.alert(err.message);
@@ -112,7 +123,7 @@ export default function AdminGroundDetailsPage() {
   const handleDeleteGround = async () => {
     if (!window.confirm('Are you sure you want to permanently delete this ground? This cannot be undone.')) return;
     try {
-      await api.delete(`/grounds/${groundId}`);
+      await deleteGround(groundId);
       navigate('/admin/grounds');
     } catch (err) {
       window.alert(err.message || 'Cannot delete ground (it may have active bookings). Try deactivating instead.');
@@ -273,7 +284,7 @@ export default function AdminGroundDetailsPage() {
                 
                 return (
                   <tr key={slot.id} className="hover:bg-pill-hover transition">
-                    <td className="whitespace-nowrap px-6 py-4 text-sm text-primary font-medium">{new Date(dStr).toLocaleDateString()}</td>
+                    <td className="whitespace-nowrap px-6 py-4 text-sm text-primary font-medium">{formatDate(dStr)}</td>
                     <td className="whitespace-nowrap px-6 py-4 text-sm text-secondary">{slot.start_time.slice(0,5)} - {slot.end_time.slice(0,5)}</td>
                     <td className="whitespace-nowrap px-6 py-4 text-sm text-primary font-bold">₹{slot.price}</td>
                     <td className="whitespace-nowrap px-6 py-4 text-sm">

@@ -7,20 +7,27 @@ class GroundsController {
   // ===========================================================================
 
   async listGroundsAdmin(req, res) {
-    const { sport_id } = req.query;
-    const grounds = await groundsService.listGrounds({ activeOnly: false, sport_id });
+    const { sport_id, location } = req.query;
+    const grounds = await groundsService.listGrounds({ activeOnly: false, sport_id, location });
     res.json({ success: true, data: { grounds } });
   }
 
   async listGroundsPublic(req, res) {
-    const { sport_id } = req.query;
-    const grounds = await groundsService.listGrounds({ activeOnly: true, sport_id });
+    const { sport_id, location } = req.query;
+    const grounds = (await groundsService.listGrounds({ activeOnly: true, sport_id, location })).map((ground) => {
+      const { contact_phone, contact_email, ...publicGround } = ground;
+      return publicGround;
+    });
     res.json({ success: true, data: { grounds } });
   }
 
   async getGround(req, res) {
     const ground = await groundsService.getGroundById(req.params.groundId);
     if (!ground) return res.status(404).json({ success: false, message: 'Ground not found' });
+    if (!req.user) {
+      const { contact_phone, contact_email, ...publicGround } = ground;
+      return res.json({ success: true, data: { ground: publicGround } });
+    }
     res.json({ success: true, data: { ground } });
   }
 

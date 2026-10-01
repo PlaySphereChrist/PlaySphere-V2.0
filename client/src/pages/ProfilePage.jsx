@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { api } from '../lib/api';
+import { getMyUser } from '../features/users/api';
 import {
   PsCard,
   PsBadge,
@@ -20,7 +20,7 @@ export default function ProfilePage() {
   const loadProfile = async () => {
     try {
       setLoading(true);
-      const res = await api.get('/users/me');
+      const res = await getMyUser();
       setAccount(res.data.user);
     } catch (err) {
       setError(err.message || 'Failed to load account details');

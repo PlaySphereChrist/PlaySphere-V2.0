@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../../lib/api';
+import { createGround, listAdminGrounds } from '../../features/grounds/api';
 import {
   PsButton,
   PsCard,
@@ -28,7 +28,7 @@ export default function AdminGroundsPage() {
   const fetchGrounds = async () => {
     try {
       setLoading(true);
-      const res = await api.get('/grounds/admin/all');
+      const res = await listAdminGrounds();
       setGrounds(res.data.grounds || []);
     } catch (err) {
       setError(err.message || 'Failed to load grounds');
@@ -48,7 +48,7 @@ export default function AdminGroundsPage() {
     try {
       setSubmitting(true);
       setFormError('');
-      await api.post('/grounds', formData);
+      await createGround(formData);
       setShowForm(false);
       setFormData({ name: '', address: '', city: '', state: '', contact_phone: '', description: '' });
       fetchGrounds();

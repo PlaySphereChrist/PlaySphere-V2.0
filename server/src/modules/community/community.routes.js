@@ -1,47 +1,46 @@
-const express = require('express');
+﻿const express = require('express');
 const router  = express.Router();
 const asyncHandler  = require('../../utils/asyncHandler');
-const { authenticate, authorizeRoles } = require('../../middleware/auth');
+const { authenticate, authenticateOptional, authorizeRoles } = require('../../middleware/auth');
 const ctrl = require('./community.controller');
 
-// All community endpoints require authentication
-router.use(authenticate);
-
 // ─── Community (unified) ──────────────────────────────────────────────────────
-router.get('/',       asyncHandler(ctrl.getCommunity));
-router.post('/',      authorizeRoles('ORGANIZER', 'ADMIN'), asyncHandler(ctrl.updateCommunity));
-router.patch('/',     authorizeRoles('ORGANIZER', 'ADMIN'), asyncHandler(ctrl.updateCommunity));
+router.get('/all', authenticateOptional, asyncHandler(ctrl.listCommunities));
+router.post('/create', authenticate, authorizeRoles('ORGANIZER', 'ADMIN'), asyncHandler(ctrl.createCommunity));
+router.get('/',       authenticateOptional, asyncHandler(ctrl.getCommunity));
+router.post('/',      authenticate, authorizeRoles('ORGANIZER', 'ADMIN'), asyncHandler(ctrl.updateCommunity));
+router.patch('/',     authenticate, authorizeRoles('ORGANIZER', 'ADMIN'), asyncHandler(ctrl.updateCommunity));
 
 // ─── Membership ───────────────────────────────────────────────────────────────
-router.get('/members',   asyncHandler(ctrl.getMembers));
-router.post('/join',     asyncHandler(ctrl.joinCommunity));
-router.post('/leave',    asyncHandler(ctrl.leaveCommunity));
+router.get('/members',   authenticateOptional, asyncHandler(ctrl.getMembers));
+router.post('/join',     authenticate, asyncHandler(ctrl.joinCommunity));
+router.post('/leave',    authenticate, asyncHandler(ctrl.leaveCommunity));
 
 // ─── Equipment Requests (before /:postId to avoid ambiguity) ─────────────────
-router.get('/equipment-requests',           asyncHandler(ctrl.listEquipmentRequests));
-router.post('/equipment-requests',          asyncHandler(ctrl.createEquipmentRequest));
-router.get('/equipment-requests/:requestId',  asyncHandler(ctrl.getEquipmentRequest));
-router.patch('/equipment-requests/:requestId', asyncHandler(ctrl.updateEquipmentRequest));
+router.get('/equipment-requests',            authenticateOptional, asyncHandler(ctrl.listEquipmentRequests));
+router.post('/equipment-requests',           authenticate, asyncHandler(ctrl.createEquipmentRequest));
+router.get('/equipment-requests/:requestId', authenticateOptional, asyncHandler(ctrl.getEquipmentRequest));
+router.patch('/equipment-requests/:requestId', authenticate, asyncHandler(ctrl.updateEquipmentRequest));
 
 // ─── Reports ─────────────────────────────────────────────────────────────────
-router.post('/reports',             asyncHandler(ctrl.createReport));
-router.get('/reports',              authorizeRoles('ADMIN'), asyncHandler(ctrl.listReports));
-router.patch('/reports/:reportId',  authorizeRoles('ADMIN'), asyncHandler(ctrl.updateReport));
+router.post('/reports',             authenticate, asyncHandler(ctrl.createReport));
+router.get('/reports',              authenticate, authorizeRoles('ADMIN'), asyncHandler(ctrl.listReports));
+router.patch('/reports/:reportId',  authenticate, authorizeRoles('ADMIN'), asyncHandler(ctrl.updateReport));
 
 // ─── Posts ────────────────────────────────────────────────────────────────────
-router.get('/posts',              asyncHandler(ctrl.listPosts));
-router.post('/posts',             asyncHandler(ctrl.createPost));
-router.get('/posts/:postId',      asyncHandler(ctrl.getPost));
-router.patch('/posts/:postId',    asyncHandler(ctrl.updatePost));
-router.post('/posts/:postId/react', asyncHandler(ctrl.reactToPost));
-router.post('/posts/:postId/archive',    asyncHandler(ctrl.archivePost));
-router.post('/posts/:postId/moderate',   authorizeRoles('ADMIN'), asyncHandler(ctrl.moderatePost));
+router.get('/posts',              authenticateOptional, asyncHandler(ctrl.listPosts));
+router.post('/posts',             authenticate, asyncHandler(ctrl.createPost));
+router.get('/posts/:postId',      authenticateOptional, asyncHandler(ctrl.getPost));
+router.patch('/posts/:postId',    authenticate, asyncHandler(ctrl.updatePost));
+router.post('/posts/:postId/react', authenticate, asyncHandler(ctrl.reactToPost));
+router.post('/posts/:postId/archive', authenticate, asyncHandler(ctrl.archivePost));
+router.post('/posts/:postId/moderate', authenticate, authorizeRoles('ADMIN'), asyncHandler(ctrl.moderatePost));
 
 // ─── Comments ─────────────────────────────────────────────────────────────────
-router.get('/posts/:postId/comments',   asyncHandler(ctrl.listComments));
-router.post('/posts/:postId/comments',  asyncHandler(ctrl.createComment));
-router.patch('/comments/:commentId',    asyncHandler(ctrl.updateComment));
-router.post('/comments/:commentId/archive',  asyncHandler(ctrl.archiveComment));
-router.post('/comments/:commentId/moderate', authorizeRoles('ADMIN'), asyncHandler(ctrl.moderateComment));
+router.get('/posts/:postId/comments',   authenticateOptional, asyncHandler(ctrl.listComments));
+router.post('/posts/:postId/comments',  authenticate, asyncHandler(ctrl.createComment));
+router.patch('/comments/:commentId',    authenticate, asyncHandler(ctrl.updateComment));
+router.post('/comments/:commentId/archive', authenticate, asyncHandler(ctrl.archiveComment));
+router.post('/comments/:commentId/moderate', authenticate, authorizeRoles('ADMIN'), asyncHandler(ctrl.moderateComment));
 
 module.exports = router;

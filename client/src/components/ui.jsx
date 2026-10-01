@@ -2,6 +2,7 @@
  * PlaySphere shared UI components.
  * All components use CSS variables from index.css (design tokens).
  */
+import { useId } from 'react';
 
 /* ── Button ──────────────────────────────────────────────────── */
 export function PsButton({
@@ -14,7 +15,7 @@ export function PsButton({
   onClick,
   ...props
 }) {
-  const base = 'inline-flex items-center justify-center gap-2 font-semibold rounded-full transition hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed';
+  const base = 'inline-flex items-center justify-center gap-2 font-semibold rounded-full transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-maroon/60 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed';
   const sizes = {
     sm: 'px-3 py-1 text-xs',
     md: 'px-4 py-2 text-sm',
@@ -54,60 +55,78 @@ export function PsCard({ children, className = '', ...props }) {
 
 /* ── Input ──────────────────────────────────────────────────────── */
 export function PsInput({ label, id, error, className = '', ...props }) {
+  const generatedId = useId();
+  const controlId = id || generatedId;
+  const errorId = `${controlId}-error`;
+
   return (
     <div className="flex flex-col gap-1">
       {label && (
-        <label htmlFor={id} className="text-sm font-medium text-primary">
+        <label htmlFor={controlId} className="text-sm font-medium text-primary">
           {label}
         </label>
       )}
       <input
-        id={id}
+        id={controlId}
+        aria-invalid={error ? 'true' : undefined}
+        aria-describedby={error ? errorId : undefined}
         className={`w-full rounded-xl border border-border bg-surface text-primary placeholder-muted px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40 transition ${error ? 'border-error' : ''} ${className}`}
         {...props}
       />
-      {error && <span className="text-xs text-error">{error}</span>}
+      {error && <span id={errorId} className="text-xs text-error">{error}</span>}
     </div>
   );
 }
 
 /* ── Textarea ──────────────────────────────────────────────────── */
 export function PsTextarea({ label, id, error, rows = 4, className = '', ...props }) {
+  const generatedId = useId();
+  const controlId = id || generatedId;
+  const errorId = `${controlId}-error`;
+
   return (
     <div className="flex flex-col gap-1">
       {label && (
-        <label htmlFor={id} className="text-sm font-medium text-primary">
+        <label htmlFor={controlId} className="text-sm font-medium text-primary">
           {label}
         </label>
       )}
       <textarea
-        id={id}
+        id={controlId}
         rows={rows}
+        aria-invalid={error ? 'true' : undefined}
+        aria-describedby={error ? errorId : undefined}
         className={`w-full rounded-xl border border-border bg-surface text-primary placeholder-muted px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40 transition resize-none ${error ? 'border-error' : ''} ${className}`}
         {...props}
       />
-      {error && <span className="text-xs text-error">{error}</span>}
+      {error && <span id={errorId} className="text-xs text-error">{error}</span>}
     </div>
   );
 }
 
 /* ── Select ──────────────────────────────────────────────────────── */
 export function PsSelect({ label, id, error, children, className = '', ...props }) {
+  const generatedId = useId();
+  const controlId = id || generatedId;
+  const errorId = `${controlId}-error`;
+
   return (
     <div className="flex flex-col gap-1">
       {label && (
-        <label htmlFor={id} className="text-sm font-medium text-primary">
+        <label htmlFor={controlId} className="text-sm font-medium text-primary">
           {label}
         </label>
       )}
       <select
-        id={id}
+        id={controlId}
+        aria-invalid={error ? 'true' : undefined}
+        aria-describedby={error ? errorId : undefined}
         className={`w-full rounded-xl border border-border bg-surface text-primary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40 transition ${error ? 'border-error' : ''} ${className}`}
         {...props}
       >
         {children}
       </select>
-      {error && <span className="text-xs text-error">{error}</span>}
+      {error && <span id={errorId} className="text-xs text-error">{error}</span>}
     </div>
   );
 }
@@ -137,7 +156,11 @@ export function PsAlert({ children, variant = 'error', className = '' }) {
     info: 'bg-maroon/10 border border-maroon/20 text-maroon',
   };
   return (
-    <div className={`rounded-xl px-4 py-3 text-sm ${variants[variant]} ${className}`}>
+    <div
+      role={variant === 'error' ? 'alert' : 'status'}
+      aria-live={variant === 'error' ? 'assertive' : 'polite'}
+      className={`rounded-xl px-4 py-3 text-sm ${variants[variant]} ${className}`}
+    >
       {children}
     </div>
   );
@@ -168,8 +191,8 @@ export function PsPageHeader({ title, subtitle, actions, backTo, backLabel = 'Ba
 /* ── Loading State ──────────────────────────────────────────────── */
 export function PsLoading({ message = 'Loading...' }) {
   return (
-    <div className="flex flex-col items-center justify-center py-20 gap-3">
-      <div className="w-8 h-8 rounded-full border-2 border-border border-t-maroon animate-spin" />
+    <div className="flex flex-col items-center justify-center py-20 gap-3" role="status" aria-live="polite">
+      <div className="w-8 h-8 rounded-full border-2 border-border border-t-maroon animate-spin" aria-hidden="true" />
       <p className="text-sm text-secondary">{message}</p>
     </div>
   );
@@ -192,7 +215,7 @@ export function PsEmpty({ title, message, action }) {
 /* ── Error State ──────────────────────────────────────────────────── */
 export function PsErrorState({ message = 'Something went wrong.', retry }) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+    <div className="flex flex-col items-center justify-center py-16 gap-3 text-center" role="alert">
       <div className="w-14 h-14 rounded-full bg-error/10 flex items-center justify-center text-2xl">⚠️</div>
       <p className="text-sm text-error">{message}</p>
       {retry && (

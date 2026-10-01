@@ -1,16 +1,20 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../../lib/api';
+import { Search } from 'lucide-react';
+import { listTournaments } from '../../features/tournaments/api';
+import { getSports } from '../../features/sports/api';
 import { useAuth } from '../../store/AuthContext';
+import { resolveDemoImageUrl } from '../../utils/demoImages';
 import {
   PsButton,
   PsCard,
+  PsInput,
   PsSelect,
   PsBadge,
-  PsAlert,
   PsPageHeader,
   PsLoading,
-  PsEmpty
+  PsEmpty,
+  PsErrorState
 } from '../../components/ui';
 
 export default function TournamentsPage() {
@@ -20,7 +24,10 @@ export default function TournamentsPage() {
   const [error, setError] = useState('');
   
   const [sportId, setSportId] = useState('');
-  const [status, setStatus] = useState('registration_open');
+  const [status, setStatus] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [appliedFilters, setAppliedFilters] = useState({ sportId: '', status: '', searchTerm: '' });
+  const [retryKey, setRetryKey] = useState(0);
 
   const { user } = useAuth();
   const isOrganizerOrAdmin = user?.roles?.includes('ORGANIZER') || user?.roles?.includes('ADMIN');
@@ -28,7 +35,7 @@ export default function TournamentsPage() {
   useEffect(() => {
     const fetchSports = async () => {
       try {
-        const res = await api.get('/sports');
+        const res = await getSports();
         setSports(res.data.sports);
       } catch (err) {
         console.error('Failed to load sports', err);
@@ -38,25 +45,50 @@ export default function TournamentsPage() {
   }, []);
 
   useEffect(() => {
+    let active = true;
     const fetchTournaments = async () => {
       try {
         setLoading(true);
+        setError('');
         const params = new window.URLSearchParams();
-        if (sportId) params.append('sport_id', sportId);
-        if (status && isOrganizerOrAdmin) params.append('status', status);
+        if (appliedFilters.sportId) params.append('sport_id', appliedFilters.sportId);
+        if (appliedFilters.status) params.append('status', appliedFilters.status);
+        if (appliedFilters.searchTerm) params.append('search', appliedFilters.searchTerm);
 
-        const res = await api.get(`/tournaments?${params.toString()}`);
-        setTournaments(res.data.tournaments || []);
+        params.append('exclude_cancelled', 'true');
+        const res = await listTournaments(params.toString());
+        if (!active) return;
+        const fetched = res.data.tournaments || [];
+        setTournaments(fetched.filter((t) => t.status !== 'cancelled'));
         setError('');
       } catch (err) {
-        setError(err.message || 'Failed to load tournaments');
+        if (active) setError(err.message || 'Failed to load tournaments');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     fetchTournaments();
-  }, [sportId, status, isOrganizerOrAdmin]);
+    return () => { active = false; };
+  }, [appliedFilters, isOrganizerOrAdmin, retryKey]);
+
+  const handleSearch = (event) => {
+    event.preventDefault();
+    setAppliedFilters({ sportId, status, searchTerm: searchInput.trim() });
+  };
+
+  const clearFilters = () => {
+    setSportId('');
+    setStatus('');
+    setSearchInput('');
+    setAppliedFilters({ sportId: '', status: '', searchTerm: '' });
+  };
+
+  const filtersChanged = sportId !== appliedFilters.sportId
+    || status !== appliedFilters.status
+    || searchInput.trim() !== appliedFilters.searchTerm;
+  const hasActiveFilters = Boolean(appliedFilters.sportId || appliedFilters.status || appliedFilters.searchTerm);
+  const appliedSportName = sports.find((sport) => sport.id === appliedFilters.sportId)?.name;
 
   const getSportEmoji = (name) => {
     const lower = name?.toLowerCase() || '';
@@ -96,45 +128,87 @@ export default function TournamentsPage() {
       />
 
       <PsCard className="p-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <PsSelect
-            label="Sport"
-            value={sportId}
-            onChange={(e) => setSportId(e.target.value)}
-          >
-            <option value="">All Sports</option>
-            {sports.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </PsSelect>
-          
-          {isOrganizerOrAdmin && (
+        <form onSubmit={handleSearch}>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <PsSelect
-              label="Status"
+              label="Sport"
+              value={sportId}
+              onChange={(e) => setSportId(e.target.value)}
+            >
+              <option value="">All Sports</option>
+              {sports.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </PsSelect>
+            
+            <PsSelect
+              label="Tournament Status"
               value={status}
               onChange={(e) => setStatus(e.target.value)}
             >
-              <option value="">All Statuses</option>
-              <option value="draft">Draft</option>
-              <option value="registration_open">Registration Open</option>
-              <option value="registration_closed">Registration Closed</option>
-              <option value="in_progress">In Progress</option>
+              <option value="">All tournaments</option>
+              <option value="past">Past tournaments</option>
+              <option value="registration_open">Registration open</option>
+              <option value="registration_closed">Registration closed</option>
+              <option value="in_progress">In progress</option>
               <option value="completed">Completed</option>
+              <option value="archived">Archived</option>
+              {isOrganizerOrAdmin && <option value="draft">Draft</option>}
             </PsSelect>
+          </div>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+            <PsInput
+              label="Search tournaments"
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="Tournament, sport, or city"
+            />
+            <div className="flex shrink-0 gap-2">
+              <PsButton type="submit">
+                <span className="inline-flex items-center gap-2"><Search size={16} />Search</span>
+              </PsButton>
+              {hasActiveFilters || filtersChanged ? (
+                <PsButton type="button" variant="secondary" onClick={clearFilters}>Clear filters</PsButton>
+              ) : null}
+            </div>
+          </div>
+          {filtersChanged && (
+            <p className="mt-3 text-xs text-secondary" role="status">Filters changed. Select Search to update results.</p>
           )}
-        </div>
+        </form>
       </PsCard>
 
-      {error && <PsAlert variant="error">{error}</PsAlert>}
+      {hasActiveFilters && (
+        <div className="flex flex-wrap items-center gap-2" role="status" aria-label="Applied tournament filters" aria-live="polite">
+          <span className="text-sm text-secondary">Applied filters:</span>
+          {appliedSportName && <PsBadge>{appliedSportName}</PsBadge>}
+          {appliedFilters.status && <PsBadge>{getStatusLabel(appliedFilters.status)}</PsBadge>}
+          {appliedFilters.searchTerm && <PsBadge>“{appliedFilters.searchTerm}”</PsBadge>}
+        </div>
+      )}
 
-      {loading ? (
+      {error ? (
+        <PsErrorState message={error} retry={() => setRetryKey((key) => key + 1)} />
+      ) : loading ? (
         <PsLoading />
       ) : tournaments.length === 0 ? (
         <PsEmpty title="No tournaments found" message="Try adjusting your filters." />
       ) : (
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <section aria-label={`${tournaments.length} tournaments`}>
+          <p className="mb-3 text-sm text-secondary" aria-live="polite">Showing {tournaments.length} {tournaments.length === 1 ? 'tournament' : 'tournaments'}</p>
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {tournaments.map(tournament => (
             <PsCard key={tournament.id} className="flex flex-col hover:border-maroon/50 transition h-full">
+              <div className="relative h-64 overflow-hidden rounded-t-2xl bg-gradient-to-br from-maroon to-gold/70">
+                {tournament.banner_url && (
+                  <img
+                    src={resolveDemoImageUrl(tournament.banner_url, tournament.id || tournament.name)}
+                    alt={`${tournament.name} poster`}
+                    className="h-full w-full object-cover object-[center_68%]"
+                    onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                  />
+                )}
+              </div>
               <div className="p-6 flex-grow flex flex-col">
                 <div className="flex items-start justify-between mb-3 gap-2">
                   <PsBadge variant="default" className="shrink-0 flex items-center gap-1">
@@ -174,7 +248,8 @@ export default function TournamentsPage() {
               </div>
             </PsCard>
           ))}
-        </div>
+          </div>
+        </section>
       )}
     </div>
   );

@@ -21,6 +21,23 @@ class TeamsService {
     return rows;
   }
 
+  async getPublicTeams(userId = null) {
+    const { rows } = await db.query(
+      `SELECT t.id, t.name, t.sport_id, s.name AS sport_name,
+              t.logo_url, t.description, t.city, t.is_active,
+              COALESCE($1::uuid IS NOT NULL AND t.manager_user_id = $1::uuid, false) AS is_manager,
+              COUNT(tm.id)::int AS member_count
+       FROM teams t
+       JOIN sports s ON t.sport_id = s.id
+       LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.is_active = true
+       WHERE t.is_active = true
+       GROUP BY t.id, s.name
+       ORDER BY t.name ASC`,
+      [userId]
+    );
+    return rows;
+  }
+
   async getTeamById(teamId) {
     const { rows } = await db.query(
       `SELECT t.id, t.name, t.sport_id, s.name as sport_name, 
@@ -113,15 +130,17 @@ class TeamsService {
 
   // --- Members ---
 
-  async getTeamMembers(teamId) {
+  async getTeamMembers(teamId, requestingUser = null) {
     const { rows } = await db.query(
-      `SELECT tm.id as member_id, tm.team_role, tm.jersey_number, tm.joined_at, tm.is_active,
-              pp.id as player_profile_id, pp.display_name, pp.user_id
+      `SELECT tm.id AS member_id, tm.team_role, tm.jersey_number, tm.joined_at, tm.is_active,
+              pp.id AS player_profile_id, pp.display_name
        FROM team_members tm
        JOIN player_profiles pp ON tm.player_profile_id = pp.id
        WHERE tm.team_id = $1 AND tm.is_active = true
+         AND (pp.is_public = true OR pp.user_id = $2
+              OR EXISTS (SELECT 1 FROM teams t WHERE t.id = tm.team_id AND t.manager_user_id = $2))
        ORDER BY tm.joined_at ASC`,
-      [teamId]
+      [teamId, requestingUser?.id || null]
     );
     return rows;
   }

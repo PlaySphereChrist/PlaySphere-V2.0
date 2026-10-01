@@ -1,14 +1,17 @@
 const app = require('./src/app');
 const env = require('./src/config/env');
 const { closePool } = require('./src/config/database');
+const expiredRecordsCleanup = require('./src/services/expired-records-cleanup.service');
 
 const server = app.listen(env.PORT, () => {
   console.log(`🚀 PlaySphere Server running in ${env.NODE_ENV} mode on port ${env.PORT}`);
+  expiredRecordsCleanup.start();
 });
 
 // Graceful Shutdown Handlers
 const shutdown = async (signal) => {
   console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+  expiredRecordsCleanup.stop();
   
   server.close(async () => {
     console.log('HTTP server closed.');

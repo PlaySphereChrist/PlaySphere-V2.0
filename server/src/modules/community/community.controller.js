@@ -3,11 +3,23 @@
 const svc = require('./community.service');
 
 // Helper: extract roles array from req.user (populated by authenticate middleware)
-const roles = (req) => req.user.roles || [];
+const roles = (req) => req.user?.roles || [];
+const hideAuthorIds = (req, records) => req.user ? records : records.map(({ author_user_id, ...record }) => record);
 
 // ─── Community ────────────────────────────────────────────────────────────────
+const listCommunities = async (req, res) => {
+  const communities = await svc.listCommunities(req.user?.id || null);
+  res.json({ success: true, communities });
+};
+
+const createCommunity = async (req, res) => {
+  const community = await svc.createCommunity(req.user.id, roles(req), req.body);
+  res.status(201).json({ success: true, community });
+};
+
 const getCommunity = async (req, res) => {
   const community = await svc.getCommunity(req.query.community_id);
+  delete community.created_by_user_id;
   res.json({ success: true, community });
 };
 
@@ -20,7 +32,7 @@ const updateCommunity = async (req, res) => {
 const getMembers = async (req, res) => {
   const page  = Math.max(1, parseInt(req.query.page  || '1', 10));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
-  const data = await svc.getMembers(req.query.community_id, page, limit);
+  const data = await svc.getMembers(req.query.community_id, page, limit, req.user?.id || null);
   res.json({ success: true, ...data });
 };
 
@@ -39,7 +51,8 @@ const listPosts = async (req, res) => {
   const page     = Math.max(1, parseInt(req.query.page  || '1',  10));
   const limit    = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
   const category = req.query.category || null;
-  const data = await svc.listPosts(req.query.community_id, req.user.id, page, limit, category);
+  const data = await svc.listPosts(req.query.community_id, req.user?.id || null, page, limit, category);
+  data.posts = hideAuthorIds(req, data.posts);
   res.json({ success: true, ...data });
 };
 
@@ -49,7 +62,8 @@ const createPost = async (req, res) => {
 };
 
 const getPost = async (req, res) => {
-  const post = await svc.getPost(req.params.postId, req.user.id);
+  const post = await svc.getPost(req.params.postId, req.user?.id || null);
+  if (!req.user) delete post.author_user_id;
   res.json({ success: true, post });
 };
 
@@ -78,6 +92,7 @@ const listComments = async (req, res) => {
   const page  = Math.max(1, parseInt(req.query.page  || '1',  10));
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const data = await svc.listComments(req.params.postId, page, limit);
+  data.comments = hideAuthorIds(req, data.comments);
   res.json({ success: true, ...data });
 };
 
@@ -105,7 +120,8 @@ const moderateComment = async (req, res) => {
 const listEquipmentRequests = async (req, res) => {
   const page  = Math.max(1, parseInt(req.query.page  || '1',  10));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
-  const data = await svc.listEquipmentRequests(req.query.community_id, req.user.id, page, limit);
+  const data = await svc.listEquipmentRequests(req.query.community_id, req.user?.id || null, page, limit);
+  data.posts = hideAuthorIds(req, data.posts);
   res.json({ success: true, ...data });
 };
 
@@ -115,7 +131,8 @@ const createEquipmentRequest = async (req, res) => {
 };
 
 const getEquipmentRequest = async (req, res) => {
-  const post = await svc.getEquipmentRequest(req.params.requestId, req.user.id);
+  const post = await svc.getEquipmentRequest(req.params.requestId, req.user?.id || null);
+  if (!req.user) delete post.author_user_id;
   res.json({ success: true, equipmentRequest: post });
 };
 
@@ -145,7 +162,7 @@ const updateReport = async (req, res) => {
 };
 
 module.exports = {
-  getCommunity, updateCommunity,
+  listCommunities, createCommunity, getCommunity, updateCommunity,
   getMembers, joinCommunity, leaveCommunity,
   listPosts, createPost, getPost, updatePost, archivePost, moderatePost, reactToPost,
   listComments, createComment, updateComment, archiveComment, moderateComment,

@@ -1,10 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../../lib/api';
+import { Link, useLocation } from 'react-router-dom';
+import {
+  archiveCommunityComment,
+  createCommunityComment,
+  editCommunityComment,
+  listCommunityComments,
+} from '../../features/communities/api';
 import ReportModal from './ReportModal';
 import ModerateModal from './ModerateModal';
 import { PsButton, PsInput, PsAlert, PsLoading, PsTextarea } from '../../components/ui';
 
 export default function CommentSection({ postId, currentUser, isMember }) {
+  const location = useLocation();
+  const returnTo = `${location.pathname}${location.search}`;
   const [comments, setComments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -17,7 +25,7 @@ export default function CommentSection({ postId, currentUser, isMember }) {
 
   const fetchComments = async () => {
     try {
-      const res = await api.request('GET', `/community/posts/${postId}/comments`);
+      const res = await listCommunityComments(postId);
       if (res.success) {
         setComments(res.comments || []);
       } else {
@@ -40,7 +48,7 @@ export default function CommentSection({ postId, currentUser, isMember }) {
     if (!newBody.trim()) return;
     setSubmitting(true);
     try {
-      const res = await api.request('POST', `/community/posts/${postId}/comments`, { body: newBody });
+      const res = await createCommunityComment(postId, newBody);
       if (res.success) {
         setNewBody('');
         fetchComments();
@@ -57,7 +65,7 @@ export default function CommentSection({ postId, currentUser, isMember }) {
   const handleArchive = async (commentId) => {
     if (!window.confirm('Are you sure you want to delete this comment?')) return;
     try {
-      const res = await api.request('POST', `/community/comments/${commentId}/archive`);
+      const res = await archiveCommunityComment(commentId);
       if (res.success) {
         fetchComments();
       } else {
@@ -76,7 +84,7 @@ export default function CommentSection({ postId, currentUser, isMember }) {
   const handleEditSubmit = async (commentId) => {
     if (!editBody.trim()) return;
     try {
-      const res = await api.request('PATCH', `/community/comments/${commentId}`, { body: editBody });
+      const res = await editCommunityComment(commentId, editBody);
       if (res.success) {
         setEditingId(null);
         fetchComments();
@@ -104,7 +112,7 @@ export default function CommentSection({ postId, currentUser, isMember }) {
           return (
             <div key={c.id} className="bg-pill-hover rounded-lg p-4 text-sm border border-border">
               <div className="flex justify-between items-start mb-2">
-                <span className="font-bold text-primary">{c.author_email}</span>
+                <span className="font-bold text-primary">{c.author_name || 'Community member'}</span>
                 <span className="text-xs text-muted font-medium">{new Date(c.created_at).toLocaleString()}</span>
               </div>
 
@@ -166,7 +174,7 @@ export default function CommentSection({ postId, currentUser, isMember }) {
         </form>
       ) : (
         <PsAlert variant="info" className="mt-4">
-          You must join the community to comment.
+          {currentUser ? 'Join the community to comment.' : <>Sign in and join the community to comment. <Link className="font-semibold underline" to="/login" state={{ from: returnTo }}>Sign in</Link></>}
         </PsAlert>
       )}
 

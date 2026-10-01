@@ -1,5 +1,10 @@
 const { query, pool } = require('../../config/database');
 const eligibilityService = require('./eligibility.service');
+const {
+  assertRegistrationOpen,
+  buildWaitlistPromotionRegistration,
+  isRegistrationOpen,
+} = require('./registration-rules');
 
 class RegistrationService {
   _badRequest(msg) { const e = new Error(msg); e.statusCode = 400; return e; }
@@ -18,18 +23,7 @@ class RegistrationService {
   }
 
   _assertRegistrationOpen(tournament) {
-    if (tournament.status !== 'registration_open') {
-      throw this._badRequest(
-        `Registration is not open. Tournament status is "${tournament.status}"`
-      );
-    }
-    const now = new Date();
-    if (tournament.registration_opens_at && now < new Date(tournament.registration_opens_at)) {
-      throw this._badRequest('Registration window has not yet opened');
-    }
-    if (tournament.registration_closes_at && now > new Date(tournament.registration_closes_at)) {
-      throw this._badRequest('Registration window has closed');
-    }
+    assertRegistrationOpen(tournament);
   }
 
   async _countActiveRegistrations(client, tournamentId) {
@@ -54,9 +48,6 @@ class RegistrationService {
   // REGISTER — individual or team
   // ---------------------------------------------------------------------------
   async register(tournamentId, user, body) {
-    const tournament = await this._fetchTournament(tournamentId);
-    this._assertRegistrationOpen(tournament);
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -66,7 +57,10 @@ class RegistrationService {
         'SELECT * FROM tournaments WHERE id = $1 FOR UPDATE',
         [tournamentId]
       );
+      if (!lockRes.rows.length) throw this._notFound('Tournament not found');
       const lockedTournament = lockRes.rows[0];
+      // Check the live state after taking the same lock used by status changes.
+      this._assertRegistrationOpen(lockedTournament);
 
       let result;
       if (lockedTournament.participation_type === 'individual') {
@@ -389,7 +383,9 @@ class RegistrationService {
        FROM tournament_registrations r
        LEFT JOIN teams t ON t.id = r.team_id
        LEFT JOIN player_profiles pp ON pp.id = r.individual_player_profile_id
-       WHERE r.tournament_id = $1 AND (${conditions.join(' OR ')})
+       WHERE r.tournament_id = $1
+         AND r.status IN ('pending', 'approved')
+         AND (${conditions.join(' OR ')})
        ORDER BY r.registered_at DESC LIMIT 1`,
       params
     );
@@ -400,66 +396,115 @@ class RegistrationService {
   // CANCEL REGISTRATION
   // ---------------------------------------------------------------------------
   async cancelRegistration(tournamentId, registrationId, user) {
-    const tournament = await this._fetchTournament(tournamentId);
-
-    const regRes = await query(
-      'SELECT * FROM tournament_registrations WHERE id = $1 AND tournament_id = $2',
-      [registrationId, tournamentId]
-    );
-    if (!regRes.rows.length) throw this._notFound('Registration not found');
-    const reg = regRes.rows[0];
-
-    if (!['pending', 'approved'].includes(reg.status)) {
-      throw this._badRequest(`Cannot cancel a registration with status "${reg.status}"`);
-    }
-
-    // Authorization: registered_by_user_id, organizer, or admin
-    const isAdmin = user.roles?.includes('ADMIN');
-    const tournamentRow = await query(
-      'SELECT organizer_user_id FROM tournaments WHERE id = $1',
-      [tournamentId]
-    );
-    const isOrganizer = user.id === tournamentRow.rows[0]?.organizer_user_id;
-    const isOwner = user.id === reg.registered_by_user_id;
-
-    if (!isAdmin && !isOrganizer && !isOwner) {
-      throw this._forbidden('You are not authorized to cancel this registration');
-    }
-
-    // Block cancellation if tournament is in_progress or later (except for admin)
-    if (!isAdmin && ['in_progress', 'completed', 'archived'].includes(tournament.status)) {
-      throw this._badRequest('Cannot cancel a registration while the tournament is in progress or completed');
-    }
-
     const client = await pool.connect();
+    let tournament;
+    let reg;
+    let promotion = null;
     try {
       await client.query('BEGIN');
 
-      // Mark as withdrawn
+      // Take locks in tournament -> registration order everywhere so a
+      // withdrawal cannot race a new registration or another promotion.
+      const tournamentRes = await client.query(
+        'SELECT * FROM tournaments WHERE id = $1 FOR UPDATE',
+        [tournamentId]
+      );
+      if (!tournamentRes.rows.length) throw this._notFound('Tournament not found');
+      tournament = tournamentRes.rows[0];
+
+      const regRes = await client.query(
+        'SELECT * FROM tournament_registrations WHERE id = $1 AND tournament_id = $2 FOR UPDATE',
+        [registrationId, tournamentId]
+      );
+      if (!regRes.rows.length) throw this._notFound('Registration not found');
+      reg = regRes.rows[0];
+
+      if (!['pending', 'approved'].includes(reg.status)) {
+        throw this._badRequest(`Cannot cancel a registration with status "${reg.status}"`);
+      }
+
+      // Authorization: registered_by_user_id, organizer, or admin
+      const isAdmin = user.roles?.includes('ADMIN');
+      const isOrganizer = user.id === tournament.organizer_user_id;
+      const isOwner = user.id === reg.registered_by_user_id;
+      if (!isAdmin && !isOrganizer && !isOwner) {
+        throw this._forbidden('You are not authorized to cancel this registration');
+      }
+
+      // Block cancellation if tournament is in_progress or later (except for admin)
+      if (!isAdmin && ['in_progress', 'completed', 'archived'].includes(tournament.status)) {
+        throw this._badRequest('Cannot cancel a registration while the tournament is in progress or completed');
+      }
+
       await client.query(
-        `UPDATE tournament_registrations SET status = 'withdrawn', updated_at = NOW() WHERE id = $1`,
+        `UPDATE tournament_registrations
+         SET status = 'withdrawn', updated_at = NOW()
+         WHERE id = $1`,
         [registrationId]
       );
 
       // Attempt to promote waitlist if capacity now available
-      if (['pending', 'approved'].includes(reg.status)) {
-        await this._promoteWaitlist(client, tournament);
-      }
+      promotion = await this._promoteWaitlist(client, tournament);
 
       await client.query('COMMIT');
-      return { cancelled: true, registration_id: registrationId };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
     } finally {
       client.release();
     }
+
+    const auditService = require('../audit-logs/audit.service');
+    const notificationService = require('../notifications/notification.service');
+    auditService.log({
+      actor_user_id: user.id,
+      action: 'tournament_registration_cancelled',
+      entity_type: 'tournament_registration',
+      entity_id: registrationId,
+      old_state: reg,
+      new_state: { ...reg, status: 'withdrawn' },
+    });
+    notificationService.notifyUser({
+      userId: reg.registered_by_user_id,
+      type: 'tournament_registration',
+      title: `Tournament Registration Cancelled: ${tournament.name}`,
+      body: 'Your tournament registration was cancelled.',
+      entityType: 'tournament_registration',
+      entityId: registrationId,
+    });
+
+    if (promotion) {
+      auditService.log({
+        actor_user_id: user.id,
+        action: 'tournament_waitlist_promoted',
+        entity_type: 'tournament_registration',
+        entity_id: promotion.registration.id,
+        new_state: promotion.registration,
+      });
+      notificationService.notifyUser({
+        userId: promotion.entry.registered_by_user_id,
+        type: 'tournament_registration',
+        title: `A Tournament Spot Opened: ${tournament.name}`,
+        body: promotion.payment_required
+          ? 'You have been promoted from the waitlist. Complete the registration fee payment to confirm your place.'
+          : 'You have been promoted from the waitlist and your registration is confirmed.',
+        entityType: 'tournament_registration',
+        entityId: promotion.registration.id,
+      });
+    }
+
+    return {
+      cancelled: true,
+      registration_id: registrationId,
+      promoted_registration_id: promotion?.registration.id || null,
+      payment_required: promotion?.payment_required || false,
+    };
   }
 
   // Promote earliest waiting candidate after a slot opens
   async _promoteWaitlist(client, tournament) {
-    const capacity = tournament.max_teams;
-    if (!capacity) return; // No capacity limit means no waitlist promotion needed
+    const capacity = Number(tournament.max_teams);
+    if (!capacity || !isRegistrationOpen(tournament)) return null;
 
     const countRes = await client.query(
       `SELECT COUNT(*) AS cnt FROM tournament_registrations
@@ -467,59 +512,145 @@ class RegistrationService {
       [tournament.id]
     );
     const activeCount = parseInt(countRes.rows[0].cnt, 10);
-    if (activeCount >= capacity) return; // Still full
+    if (activeCount >= capacity) return null;
 
-    // Find earliest waiting entry
-    const waitRes = await client.query(
-      `SELECT * FROM tournament_waitlist
-       WHERE tournament_id = $1 AND status = 'waiting'
-       ORDER BY position ASC LIMIT 1`,
-      [tournament.id]
-    );
-    if (!waitRes.rows.length) return; // Nothing to promote
+    const skippedEntryIds = [];
+    while (activeCount < capacity) {
+      const params = [tournament.id];
+      let skipClause = '';
+      if (skippedEntryIds.length) {
+        params.push(skippedEntryIds);
+        skipClause = 'AND id <> ALL($2::uuid[])';
+      }
 
-    const entry = waitRes.rows[0];
+      const waitRes = await client.query(
+        `SELECT * FROM tournament_waitlist
+         WHERE tournament_id = $1 AND status = 'waiting' ${skipClause}
+         ORDER BY position ASC
+         LIMIT 1 FOR UPDATE SKIP LOCKED`,
+        params
+      );
+      if (!waitRes.rows.length) return null;
 
-    const candidateData = entry.team_id
-      ? { team_id: entry.team_id }
-      : { player_profile_id: entry.individual_player_profile_id };
+      const entry = waitRes.rows[0];
+      const candidateColumn = entry.team_id ? 'team_id' : 'individual_player_profile_id';
+      const candidateId = entry.team_id || entry.individual_player_profile_id;
 
-    let eligResult;
-    try {
-      // Re-evaluate using internal engine (uses same client, no auth checks)
-      await client.query('SAVEPOINT promote_check');
-      eligResult = await eligibilityService.evaluateCandidateInternal(client, tournament.id, candidateData);
-    } catch (e) {
-      await client.query('ROLLBACK TO SAVEPOINT promote_check');
-      return; // If eligibility check fails, skip promotion
+      // A participant may have registered directly after joining the queue.
+      // Retire that stale queue entry instead of violating the active-registration index.
+      const activeRegistration = await client.query(
+        `SELECT id FROM tournament_registrations
+         WHERE tournament_id = $1 AND ${candidateColumn} = $2
+           AND status IN ('pending', 'approved')
+         LIMIT 1`,
+        [tournament.id, candidateId]
+      );
+      if (activeRegistration.rows.length) {
+        await client.query(
+          `UPDATE tournament_waitlist
+           SET status = 'withdrawn', updated_at = NOW()
+           WHERE id = $1`,
+          [entry.id]
+        );
+        continue;
+      }
+
+      const candidateData = entry.team_id
+        ? { team_id: entry.team_id }
+        : { player_profile_id: entry.individual_player_profile_id };
+
+      let eligibility;
+      try {
+        await client.query('SAVEPOINT waitlist_eligibility');
+        eligibility = await eligibilityService.evaluateCandidateInternal(
+          client,
+          tournament.id,
+          candidateData
+        );
+        await client.query('RELEASE SAVEPOINT waitlist_eligibility');
+      } catch {
+        await client.query('ROLLBACK TO SAVEPOINT waitlist_eligibility');
+        await client.query('RELEASE SAVEPOINT waitlist_eligibility');
+        // Do not promote anyone if the eligibility check itself failed.
+        return null;
+      }
+
+      if (!eligibility.effective_eligible) {
+        // Keep their place in the queue, but look for the next eligible entry.
+        skippedEntryIds.push(entry.id);
+        continue;
+      }
+
+      let registrationName = null;
+      if (entry.team_id) {
+        const teamRes = await client.query(
+          'SELECT name FROM teams WHERE id = $1',
+          [entry.team_id]
+        );
+        registrationName = teamRes.rows[0]?.name || null;
+      }
+
+      const promotion = buildWaitlistPromotionRegistration(
+        tournament,
+        eligibility,
+        registrationName
+      );
+      const registrationRes = await client.query(
+        `INSERT INTO tournament_registrations
+           (tournament_id, team_id, individual_player_profile_id, registered_by_user_id,
+            status, eligibility_status, registration_name, registered_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         RETURNING *`,
+        [
+          tournament.id,
+          entry.team_id || null,
+          entry.individual_player_profile_id || null,
+          entry.registered_by_user_id,
+          promotion.status,
+          promotion.eligibility_status,
+          promotion.registration_name,
+        ]
+      );
+      const registration = registrationRes.rows[0];
+
+      if (entry.team_id) {
+        await client.query(
+          `INSERT INTO tournament_registration_players (registration_id, player_profile_id)
+           SELECT $1, tm.player_profile_id
+           FROM team_members tm
+           WHERE tm.team_id = $2 AND tm.is_active = true
+           ON CONFLICT (registration_id, player_profile_id) DO NOTHING`,
+          [registration.id, entry.team_id]
+        );
+      }
+
+      if (promotion.payment_required) {
+        await client.query(
+          `INSERT INTO payments
+             (user_id, entity_type, entity_id, amount, currency, status, payment_type, description)
+           VALUES ($1, 'tournament_registration', $2, $3, 'INR', 'created', 'full', $4)`,
+          [
+            entry.registered_by_user_id,
+            registration.id,
+            promotion.fee,
+            `Tournament Registration Fee: ${tournament.name}`,
+          ]
+        );
+      }
+
+      await client.query(
+        `UPDATE tournament_waitlist SET status = 'promoted', updated_at = NOW() WHERE id = $1`,
+        [entry.id]
+      );
+
+      return {
+        entry,
+        registration,
+        payment_required: promotion.payment_required,
+      };
     }
 
-    if (!eligResult.effective_eligible) {
-      // Mark this entry as still waiting but skip it — it's ineligible
-      // Move to next: just skip, don't promote
-      return;
-    }
-
-    // Promote: update waitlist entry and create registration
-    await client.query(
-      `UPDATE tournament_waitlist SET status = 'promoted', updated_at = NOW() WHERE id = $1`,
-      [entry.id]
-    );
-
-    await client.query(
-      `INSERT INTO tournament_registrations
-         (tournament_id, team_id, individual_player_profile_id, registered_by_user_id,
-          status, eligibility_status, registration_name, registered_at)
-       VALUES ($1, $2, $3, $4, 'approved', $5, $6, NOW())`,
-      [
-        tournament.id,
-        entry.team_id || null,
-        entry.individual_player_profile_id || null,
-        entry.registered_by_user_id,
-        eligResult.override ? 'overridden' : 'approved',
-        null
-      ]
-    );
+    return null;
   }
 
   // ---------------------------------------------------------------------------
@@ -577,6 +708,80 @@ class RegistrationService {
       params
     );
     return res.rows[0] || null;
+  }
+
+  async cancelMyWaitlistEntry(tournamentId, user) {
+    const client = await pool.connect();
+    let entry;
+    try {
+      await client.query('BEGIN');
+
+      const tournamentRes = await client.query(
+        'SELECT id FROM tournaments WHERE id = $1 FOR UPDATE',
+        [tournamentId]
+      );
+      if (!tournamentRes.rows.length) throw this._notFound('Tournament not found');
+
+      const profileRes = await client.query(
+        'SELECT id FROM player_profiles WHERE user_id = $1',
+        [user.id]
+      );
+      const profileId = profileRes.rows[0]?.id;
+
+      const teamRes = await client.query(
+        'SELECT id FROM teams WHERE manager_user_id = $1 AND is_active = true',
+        [user.id]
+      );
+      const teamIds = teamRes.rows.map((row) => row.id);
+
+      const conditions = [];
+      const params = [tournamentId];
+      if (profileId) {
+        params.push(profileId);
+        conditions.push(`individual_player_profile_id = $${params.length}`);
+      }
+      if (teamIds.length) {
+        params.push(teamIds);
+        conditions.push(`team_id = ANY($${params.length})`);
+      }
+      if (!conditions.length) throw this._notFound('Waitlist entry not found');
+
+      const entryRes = await client.query(
+        `SELECT * FROM tournament_waitlist
+         WHERE tournament_id = $1 AND status = 'waiting'
+           AND (${conditions.join(' OR ')})
+         ORDER BY position ASC LIMIT 1 FOR UPDATE`,
+        params
+      );
+      if (!entryRes.rows.length) throw this._notFound('Waitlist entry not found');
+      entry = entryRes.rows[0];
+
+      await client.query(
+        `UPDATE tournament_waitlist
+         SET status = 'withdrawn', updated_at = NOW()
+         WHERE id = $1`,
+        [entry.id]
+      );
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const auditService = require('../audit-logs/audit.service');
+    auditService.log({
+      actor_user_id: user.id,
+      action: 'tournament_waitlist_withdrawn',
+      entity_type: 'tournament_waitlist',
+      entity_id: entry.id,
+      old_state: entry,
+      new_state: { ...entry, status: 'withdrawn' },
+    });
+
+    return { cancelled: true, waitlist_entry_id: entry.id };
   }
 
   // ---------------------------------------------------------------------------

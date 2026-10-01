@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 const { query } = require('../../config/database');
 
@@ -83,17 +83,20 @@ async function updateCommunity(communityId, userId, userRoles, { description }) 
 
 // ─── MEMBERSHIP ───────────────────────────────────────────────────────────────
 
-async function getMembers(communityId, page = 1, limit = 50) {
+async function getMembers(communityId, page = 1, limit = 50, requestingUserId = null) {
   const community = await _getCommunity(null, communityId);
   const offset = Math.max(0, (page - 1) * limit);
   const res = await query(
-    `SELECT cm.id, cm.user_id, cm.role, cm.joined_at, u.email
+    `SELECT cm.id,
+            CASE WHEN cm.user_id = $4 THEN cm.user_id ELSE NULL END AS user_id,
+            cm.role, cm.joined_at,
+            CASE WHEN pp.is_public OR cm.user_id = $4 THEN pp.display_name ELSE 'Community member' END AS display_name
      FROM community_members cm
-     JOIN users u ON u.id = cm.user_id
+     LEFT JOIN player_profiles pp ON pp.user_id = cm.user_id
      WHERE cm.community_id = $1
      ORDER BY cm.joined_at ASC
      LIMIT $2 OFFSET $3`,
-    [community.id, limit, offset]
+    [community.id, limit, offset, requestingUserId]
   );
   const countRes = await query(
     'SELECT COUNT(*) FROM community_members WHERE community_id = $1', [community.id]
@@ -145,13 +148,14 @@ async function listPosts(communityId, userId, page = 1, limit = 20, category = n
   const res = await query(
     `SELECT p.id, p.title, p.body, p.category, p.is_pinned, p.is_locked,
             p.is_deleted, p.is_moderated, p.moderation_reason,
-            p.created_at, p.updated_at, p.author_user_id, p.community_id, u.email AS author_email,
+            p.created_at, p.updated_at, p.author_user_id, p.community_id,
+            CASE WHEN pp.is_public THEN pp.display_name ELSE 'Community member' END AS author_name,
             (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.is_deleted = FALSE) AS comment_count,
             (SELECT COALESCE(json_agg(json_build_object('type', r.reaction_type, 'count', r.cnt)), '[]')
              FROM (SELECT reaction_type, COUNT(*) as cnt FROM post_reactions WHERE post_id = p.id GROUP BY reaction_type) r) AS reactions,
             (SELECT reaction_type FROM post_reactions WHERE post_id = p.id AND user_id = $4 LIMIT 1) AS user_reaction
      FROM posts p
-     JOIN users u ON u.id = p.author_user_id
+     LEFT JOIN player_profiles pp ON pp.user_id = p.author_user_id
      WHERE p.community_id = $1
        AND p.is_deleted  = FALSE
        AND p.is_moderated = FALSE
@@ -170,7 +174,7 @@ async function listPosts(communityId, userId, page = 1, limit = 20, category = n
   return { posts: res.rows, total: parseInt(countRes.rows[0].count, 10) };
 }
 
-async function createPost(communityId, userId, userRoles, { title, body, category = 'general' }) {
+async function createPost(communityId, userId, userRoles, { title, body, category = 'general', image_url = null }) {
   if (!title || !title.trim()) throw badReq('title is required.');
   if (!body  || !body.trim())  throw badReq('body is required.');
   if (title.trim().length > 300) throw badReq('title must be ≤ 300 characters.');
@@ -190,10 +194,10 @@ async function createPost(communityId, userId, userRoles, { title, body, categor
   }
 
   const res = await query(
-    `INSERT INTO posts (community_id, author_user_id, title, body, category)
-     VALUES ($1, $2, $3, $4, $5::post_category_type)
-     RETURNING id, title, body, category, is_pinned, is_locked, is_moderated, created_at, updated_at`,
-    [community.id, userId, title.trim(), body.trim(), category]
+    `INSERT INTO posts (community_id, author_user_id, title, body, category, image_url)
+     VALUES ($1, $2, $3, $4, $5::post_category_type, $6)
+     RETURNING id, title, body, category, image_url, is_pinned, is_locked, is_moderated, created_at, updated_at`,
+    [community.id, userId, title.trim(), body.trim(), category, image_url || null]
   );
   return res.rows[0];
 }
@@ -203,11 +207,12 @@ async function getPost(postId, userId = null) {
   const res = await query(
     `SELECT p.id, p.title, p.body, p.category, p.is_pinned, p.is_locked,
             p.is_deleted, p.is_moderated, p.moderation_reason,
-            p.created_at, p.updated_at, p.author_user_id, p.community_id, u.email AS author_email,
+            p.created_at, p.updated_at, p.author_user_id, p.community_id,
+            CASE WHEN pp.is_public THEN pp.display_name ELSE 'Community member' END AS author_name,
             (SELECT COALESCE(json_agg(json_build_object('type', r.reaction_type, 'count', r.cnt)), '[]')
              FROM (SELECT reaction_type, COUNT(*) as cnt FROM post_reactions WHERE post_id = p.id GROUP BY reaction_type) r) AS reactions,
             (SELECT reaction_type FROM post_reactions WHERE post_id = p.id AND user_id = $2 LIMIT 1) AS user_reaction
-     FROM posts p JOIN users u ON u.id = p.author_user_id
+     FROM posts p LEFT JOIN player_profiles pp ON pp.user_id = p.author_user_id
      WHERE p.id = $1 AND p.is_deleted = FALSE`,
     [postId, userId]
   );
@@ -293,8 +298,9 @@ async function listComments(postId, page = 1, limit = 50) {
   const res = await query(
     `SELECT c.id, c.post_id, c.body, c.is_deleted, c.is_moderated, c.moderation_reason,
             c.parent_comment_id, c.created_at, c.updated_at,
-            c.author_user_id, u.email AS author_email
-     FROM comments c JOIN users u ON u.id = c.author_user_id
+            c.author_user_id,
+            CASE WHEN pp.is_public THEN pp.display_name ELSE 'Community member' END AS author_name
+     FROM comments c LEFT JOIN player_profiles pp ON pp.user_id = c.author_user_id
      WHERE c.post_id = $1 AND c.is_deleted = FALSE AND c.is_moderated = FALSE
      ORDER BY c.created_at ASC
      LIMIT $2 OFFSET $3`,
@@ -476,7 +482,51 @@ async function updateReport(reportId, adminUserId, userRoles, { status, moderati
   return res.rows[0];
 }
 
+async function listCommunities(userId = null) {
+  const res = await query(
+    `SELECT 
+       c.id, c.name, c.description, c.city, c.banner_url, c.created_at, c.created_by_user_id, c.tournament_id,
+       s.name as sport_name,
+       t.name as tournament_name,
+       t.status as tournament_status,
+       (SELECT COUNT(*)::int FROM community_members cm WHERE cm.community_id = c.id) as member_count,
+       (SELECT COUNT(*)::int FROM posts p WHERE p.community_id = c.id AND p.is_deleted = FALSE AND p.is_moderated = FALSE) as post_count,
+       CASE WHEN $1::uuid IS NOT NULL THEN
+         EXISTS(SELECT 1 FROM community_members cm WHERE cm.community_id = c.id AND cm.user_id = $1)
+       ELSE FALSE END as is_member
+     FROM communities c
+     LEFT JOIN sports s ON s.id = c.sport_id
+     LEFT JOIN tournaments t ON t.id = c.tournament_id
+     WHERE c.is_active = TRUE AND (t.status IS NULL OR t.status != 'cancelled')
+     ORDER BY (SELECT COUNT(*) FROM posts p WHERE p.community_id = c.id) DESC, member_count DESC, c.created_at DESC`,
+    [userId]
+  );
+  return res.rows;
+}
+
+async function createCommunity(userId, userRoles, { name, description, sport_id, city, banner_url, tournament_id }) {
+  if (!name || !name.trim()) throw badReq('Community name is required.');
+  if (name.trim().length > 100) throw badReq('Community name must be <= 100 characters.');
+  
+  const res = await query(
+    `INSERT INTO communities (name, description, sport_id, city, banner_url, created_by_user_id, tournament_id, is_public, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, TRUE)
+     RETURNING id, name, description, sport_id, city, banner_url, tournament_id, created_at`,
+    [name.trim(), description?.trim() || null, sport_id || null, city?.trim() || null, banner_url || null, userId, tournament_id || null]
+  );
+  const comm = res.rows[0];
+  await query(
+    `INSERT INTO community_members (community_id, user_id, role)
+     VALUES ($1, $2, 'admin')
+     ON CONFLICT (community_id, user_id) DO NOTHING`,
+    [comm.id, userId]
+  );
+  return comm;
+}
+
 module.exports = {
+  listCommunities,
+  createCommunity,
   getCommunity,
   updateCommunity,
   getMembers,

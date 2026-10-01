@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Link, useNavigate, Navigate } from 'react-router-dom';
-import { api } from '../lib/api';
+import { Link, useNavigate, Navigate, useLocation } from 'react-router-dom';
+import { registerUser } from '../features/auth/api';
 import { useAuth } from '../store/AuthContext';
 import { PsButton, PsCard, PsInput, PsAlert } from '../components/ui';
 
@@ -22,10 +22,11 @@ export default function SignupPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, login } = useAuth();
 
   if (user) {
-    return <Navigate to="/tournaments" replace />;
+    return <Navigate to={location.state?.from || '/tournaments'} replace />;
   }
 
   const handleSubmit = async (e) => {
@@ -44,10 +45,10 @@ export default function SignupPage() {
 
     setLoading(true);
     try {
-      const res = await api.post('/auth/register', { email, password });
+      const res = await registerUser({ email, password });
       if (res.success) {
         await login(email, password);
-        navigate('/player-profile', { replace: true });
+        navigate(location.state?.from || '/player-profile', { replace: true });
       }
     } catch (err) {
       setError(err.message || 'Signup failed');
@@ -126,7 +127,7 @@ export default function SignupPage() {
 
             <div className="text-sm text-center pt-2">
               <span className="text-secondary">Already have an account? </span>
-              <Link to="/login" className="font-medium text-maroon hover:underline">
+              <Link to="/login" state={location.state} className="font-medium text-maroon hover:underline">
                 Log in
               </Link>
             </div>

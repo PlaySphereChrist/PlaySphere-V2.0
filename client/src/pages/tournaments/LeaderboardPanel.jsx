@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '../../lib/api';
+import { getTournamentLeaderboard } from '../../features/leaderboards/api';
 import {
   PsButton,
   PsCard,
@@ -23,7 +23,7 @@ export default function LeaderboardPanel({ tournamentId, tournament, isOrganizer
     try {
       setLoading(true);
       setError('');
-      const res = await api.get(`/leaderboards/tournaments/${tournamentId}`);
+      const res = await getTournamentLeaderboard(tournamentId);
       const lbs = res.leaderboards || [];
       setLeaderboards(lbs);
       if (!selectedLbId && lbs.length > 0) {

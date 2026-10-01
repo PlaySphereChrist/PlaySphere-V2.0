@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Bell, Check } from 'lucide-react';
-import { api } from '../lib/api';
+import {
+  getUnreadNotificationCount,
+  listRecentNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from '../features/notifications/api';
 import { useAuth } from '../store/AuthContext';
 
 export default function NotificationsDropdown() {
@@ -13,7 +18,7 @@ export default function NotificationsDropdown() {
   const fetchUnreadCount = useCallback(async () => {
     if (!user) return;
     try {
-      const data = await api.get('/notifications/unread-count');
+      const data = await getUnreadNotificationCount();
       setUnreadCount(data.unread_count ?? 0);
     } catch {
       // silently ignore
@@ -23,7 +28,7 @@ export default function NotificationsDropdown() {
   const fetchNotifications = useCallback(async () => {
     if (!user) return;
     try {
-      const data = await api.get('/notifications?limit=10');
+      const data = await listRecentNotifications();
       setNotifications(data.notifications ?? []);
     } catch {
       // silently ignore
@@ -55,7 +60,7 @@ export default function NotificationsDropdown() {
   const markAsRead = async (id, e) => {
     e.stopPropagation();
     try {
-      await api.patch(`/notifications/${id}/read`);
+      await markNotificationRead(id);
       setNotifications(ns => ns.map(n => n.id === id ? { ...n, is_read: true } : n));
       setUnreadCount(c => Math.max(0, c - 1));
     } catch { /* ignore */ }
@@ -63,7 +68,7 @@ export default function NotificationsDropdown() {
 
   const markAllAsRead = async () => {
     try {
-      await api.patch('/notifications/read-all');
+      await markAllNotificationsRead();
       setNotifications(ns => ns.map(n => ({ ...n, is_read: true })));
       setUnreadCount(0);
     } catch { /* ignore */ }

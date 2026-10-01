@@ -1,4 +1,7 @@
 const { query, pool } = require('../../config/database');
+const PUBLIC_TOURNAMENT_STATUSES = [
+  'registration_open', 'registration_closed', 'in_progress', 'completed', 'cancelled', 'archived'
+];
 
 // ---------------------------------------------------------------------------
 // Status transition map — Phase 9A controls only early lifecycle states.
@@ -7,7 +10,7 @@ const { query, pool } = require('../../config/database');
 // ---------------------------------------------------------------------------
 const ALLOWED_TRANSITIONS = {
   draft:              ['registration_open', 'cancelled'],
-  registration_open:  ['registration_closed', 'cancelled'],
+  registration_open:  ['registration_closed', 'in_progress', 'cancelled'],
   registration_closed: ['in_progress', 'cancelled'],
   in_progress:        ['completed', 'cancelled'],
   completed:          ['archived'],
@@ -44,7 +47,7 @@ class TournamentsService {
   // Visibility:
   //   - ORGANIZER: sees their own tournaments at all statuses
   //   - ADMIN: sees all tournaments
-  //   - Everyone else: sees only 'registration_open' tournaments
+  //   - Everyone else: sees published tournaments; drafts stay private
   // -------------------------------------------------------------------------
   async listTournaments(filters = {}, requestingUser = null) {
     const params = [];
@@ -56,14 +59,17 @@ class TournamentsService {
     if (isAdmin) {
       // Admin sees everything
     } else if (isOrganizer) {
-      // Organizer sees their own + registration_open
+      // Organizer sees their own drafts + all published tournaments
       params.push(requestingUser.id);
       whereConditions.push(
-        `(t.organizer_user_id = $${params.length} OR t.status IN ('registration_open', 'registration_closed', 'in_progress', 'completed'))`
+        `(t.organizer_user_id = $${params.length} OR t.co_organizer_user_id = $${params.length} OR t.status IN ('registration_open', 'registration_closed', 'in_progress', 'completed', 'cancelled', 'archived'))`
       );
+    } else if (!requestingUser) {
+      // Anonymous visitors can browse every published tournament.
+      whereConditions.push(`t.status IN ('registration_open', 'registration_closed', 'in_progress', 'completed', 'cancelled', 'archived')`);
     } else {
-      // Regular users only see registration_open
-      whereConditions.push(`t.status IN ('registration_open', 'registration_closed', 'in_progress', 'completed')`);
+      // Regular users can browse every published tournament.
+      whereConditions.push(`t.status IN ('registration_open', 'registration_closed', 'in_progress', 'completed', 'cancelled', 'archived')`);
     }
 
     if (filters.sport_id) {
@@ -71,15 +77,33 @@ class TournamentsService {
       whereConditions.push(`t.sport_id = $${params.length}`);
     }
 
-    if (filters.status && (isAdmin || isOrganizer)) {
-      // Allow admins/organizers to filter by status
-      params.push(filters.status);
-      whereConditions.push(`t.status = $${params.length}`);
+    if (filters.search?.trim()) {
+      params.push(`%${filters.search.trim()}%`);
+      whereConditions.push(`(t.name ILIKE $${params.length} OR COALESCE(t.city, '') ILIKE $${params.length} OR s.name ILIKE $${params.length})`);
     }
 
-    if (filters.organizer_user_id && isAdmin) {
+    if (filters.exclude_cancelled === 'true' || filters.exclude_cancelled === true) {
+      whereConditions.push(`t.status != 'cancelled'`);
+    }
+
+    if (filters.status === 'past') {
+      // "Past" is a date-based view, not a value in tournament_status_type.
+      // Use the end date where available, falling back to the start date for
+      // tournaments without an end date.
+      whereConditions.push(`COALESCE(t.ends_at, t.starts_at) < NOW()`);
+      whereConditions.push(`t.status != 'cancelled'`);
+    } else if (filters.status && (isAdmin || isOrganizer || PUBLIC_TOURNAMENT_STATUSES.includes(filters.status))) {
+      // Public status filters cannot reveal drafts; admins and organizers can filter their private drafts too.
+      params.push(filters.status);
+      whereConditions.push(`t.status = $${params.length}`);
+    } else if (!filters.status && !filters.organizer_user_id) {
+      // When browsing tournaments publicly without an explicit status filter, omit cancelled tournaments
+      whereConditions.push(`t.status != 'cancelled'`);
+    }
+
+    if (filters.organizer_user_id) {
       params.push(filters.organizer_user_id);
-      whereConditions.push(`t.organizer_user_id = $${params.length}`);
+      whereConditions.push(`(t.organizer_user_id = $${params.length} OR t.co_organizer_user_id = $${params.length})`);
     }
 
     const sql = `
@@ -120,11 +144,11 @@ class TournamentsService {
     if (!res.rows.length) throw this._notFound('Tournament not found');
     const tournament = res.rows[0];
 
-    // Visibility: non-admin, non-owning-organizer can only see registration_open
+    // Draft tournaments are private; all published tournaments are publicly readable.
     const isAdmin = requestingUser?.roles?.includes('ADMIN');
-    const isOwnOrganizer = requestingUser?.id === tournament.organizer_user_id;
+    const isOwnOrganizer = requestingUser?.id === tournament.organizer_user_id || requestingUser?.id === tournament.co_organizer_user_id;
 
-    if (!isAdmin && !isOwnOrganizer && tournament.status !== 'registration_open' && tournament.status !== 'registration_closed' && tournament.status !== 'in_progress' && tournament.status !== 'completed') {
+    if (!isAdmin && !isOwnOrganizer && !PUBLIC_TOURNAMENT_STATUSES.includes(tournament.status)) {
       throw this._notFound('Tournament not found');
     }
 
@@ -147,6 +171,57 @@ class TournamentsService {
     tournament.status_history = historyRes.rows;
 
     return tournament;
+  }
+
+  // -------------------------------------------------------------------------
+  // PUBLIC APPROVED PARTICIPANTS — only public profile fields are returned
+  // -------------------------------------------------------------------------
+  async listPublicParticipants(tournamentId, requestingUser = null) {
+    await this.getTournament(tournamentId, requestingUser);
+
+    const result = await query(`
+      SELECT
+        r.id AS registration_id,
+        CASE WHEN r.team_id IS NOT NULL THEN 'team' ELSE 'individual' END AS participant_type,
+        CASE
+          WHEN r.team_id IS NOT NULL THEN COALESCE(r.registration_name, t.name)
+          WHEN individual.is_public THEN individual.display_name
+          ELSE 'Private participant'
+        END AS participant_name,
+        r.team_id,
+        t.logo_url,
+        t.city,
+        CASE
+          WHEN r.team_id IS NOT NULL THEN COALESCE(roster.players, '[]'::json)
+          WHEN individual.is_public THEN json_build_array(json_build_object(
+            'display_name', individual.display_name,
+            'avatar_url', individual.avatar_url,
+            'jersey_number', NULL,
+            'is_captain', false
+          ))
+          ELSE '[]'::json
+        END AS players
+      FROM tournament_registrations r
+      LEFT JOIN teams t ON t.id = r.team_id
+      LEFT JOIN player_profiles individual ON individual.id = r.individual_player_profile_id
+      LEFT JOIN LATERAL (
+        SELECT json_agg(json_build_object(
+          'display_name', profile.display_name,
+          'avatar_url', profile.avatar_url,
+          'jersey_number', registration_player.jersey_number,
+          'is_captain', registration_player.is_captain
+        ) ORDER BY registration_player.is_captain DESC, profile.display_name ASC) AS players
+        FROM tournament_registration_players registration_player
+        JOIN player_profiles profile
+          ON profile.id = registration_player.player_profile_id
+         AND profile.is_public = true
+        WHERE registration_player.registration_id = r.id
+      ) roster ON true
+      WHERE r.tournament_id = $1 AND r.status = 'approved'
+      ORDER BY participant_name ASC
+    `, [tournamentId]);
+
+    return result.rows;
   }
 
   // -------------------------------------------------------------------------
@@ -252,17 +327,31 @@ class TournamentsService {
       );
 
       // Create dedicated community for this tournament
-      await client.query(
-        `INSERT INTO communities (name, description, sport_id, city, created_by_user_id, is_public, is_active, tournament_id)
-         VALUES ($1, $2, $3, $4, $5, true, true, $6)`,
+      const commName = (data.community_name && data.community_name.trim())
+        ? data.community_name.trim()
+        : `${name.trim()} Community`;
+      const commBanner = data.community_banner_url || data.banner_url || null;
+
+      const commRes = await client.query(
+        `INSERT INTO communities (name, description, sport_id, city, banner_url, created_by_user_id, is_public, is_active, tournament_id)
+         VALUES ($1, $2, $3, $4, $5, $6, true, true, $7)
+         RETURNING id`,
         [
-          `${name.trim()} Community`, 
-          `Official community and announcements for ${name.trim()}`,
+          commName, 
+          data.community_description || `Official community and announcements for ${name.trim()}`,
           sport_id,
           city || null,
+          commBanner,
           organizerUserId,
           tournamentId
         ]
+      );
+      const communityId = commRes.rows[0].id;
+      await client.query(
+        `INSERT INTO community_members (community_id, user_id, role)
+         VALUES ($1, $2, 'admin')
+         ON CONFLICT DO NOTHING`,
+        [communityId, organizerUserId]
       );
 
       await client.query('COMMIT');
@@ -282,16 +371,28 @@ class TournamentsService {
     const tournament = await this.getTournament(tournamentId, requestingUser);
 
     const isAdmin = requestingUser.roles?.includes('ADMIN');
-    const isOwnOrganizer = requestingUser.id === tournament.organizer_user_id;
+    const isOwnOrganizer = requestingUser.id === tournament.organizer_user_id || requestingUser.id === tournament.co_organizer_user_id;
 
     if (!isAdmin && !isOwnOrganizer) {
-      throw this._forbidden('Only the organizer or an admin can modify this tournament');
+      throw this._forbidden('Only the organizer, co-organizer, or an admin can modify this tournament');
     }
 
-    // Guard: certain statuses are locked for data edits
-    const lockedStatuses = ['in_progress', 'completed', 'cancelled', 'archived'];
-    if (lockedStatuses.includes(tournament.status)) {
+    // Guard: terminal statuses are locked for data edits
+    const terminalStatuses = ['completed', 'cancelled', 'archived'];
+    if (terminalStatuses.includes(tournament.status)) {
       throw this._badRequest(`Cannot modify a tournament with status "${tournament.status}"`);
+    }
+
+    if (tournament.status !== 'draft') {
+      if (data.format && data.format !== tournament.format) {
+        throw this._badRequest('Tournament format cannot be changed after tournament is published');
+      }
+      if (data.participation_type && data.participation_type !== tournament.participation_type) {
+        throw this._badRequest('Participation type cannot be changed after tournament is published');
+      }
+      if (data.sport_id && data.sport_id !== tournament.sport_id) {
+        throw this._badRequest('Sport cannot be changed after tournament is published');
+      }
     }
 
     // Handle status transition separately
@@ -370,11 +471,34 @@ class TournamentsService {
 
     if (fields.length === 0) return tournament;
 
-    values.push(tournamentId);
-    await query(
-      `UPDATE tournaments SET ${fields.join(', ')} WHERE id = $${idx}`,
-      values
-    );
+    if (fields.length > 0) {
+      values.push(tournamentId);
+      await query(
+        `UPDATE tournaments SET ${fields.join(', ')} WHERE id = $${idx}`,
+        values
+      );
+    }
+
+    if (data.community_name || data.community_banner_url !== undefined) {
+      const commUpdates = [];
+      const commVals = [];
+      let cIdx = 1;
+      if (data.community_name && data.community_name.trim()) {
+        commUpdates.push(`name = $${cIdx++}`);
+        commVals.push(data.community_name.trim());
+      }
+      if (data.community_banner_url !== undefined) {
+        commUpdates.push(`banner_url = $${cIdx++}`);
+        commVals.push(data.community_banner_url || null);
+      }
+      if (commUpdates.length > 0) {
+        commVals.push(tournamentId);
+        await query(
+          `UPDATE communities SET ${commUpdates.join(', ')}, updated_at = NOW() WHERE tournament_id = $${cIdx}`,
+          commVals
+        );
+      }
+    }
 
     return await this.getTournament(tournamentId, requestingUser);
   }
@@ -507,10 +631,10 @@ class TournamentsService {
 
       const tournament = lockRes.rows[0];
       const isAdmin = requestingUser.roles?.includes('ADMIN');
-      const isOwnOrganizer = requestingUser.id === tournament.organizer_user_id;
+      const isOwnOrganizer = requestingUser.id === tournament.organizer_user_id || requestingUser.id === tournament.co_organizer_user_id;
 
       if (!isAdmin && !isOwnOrganizer) {
-        throw this._forbidden('Only the organizer or an admin can change tournament status');
+        throw this._forbidden('Only the organizer, co-organizer, or an admin can change tournament status');
       }
 
       const currentStatus = tournament.status;
@@ -529,6 +653,16 @@ class TournamentsService {
         if (!configCheck.valid) {
           throw this._badRequest('Tournament configuration is incomplete or invalid. Missing: ' + 
                                  configCheck.missing.join(', ') + '. Errors: ' + configCheck.errors.join(', '));
+        }
+      }
+
+      if (newStatus === 'in_progress') {
+        const fixtureCheck = await client.query(
+          'SELECT id FROM fixtures WHERE tournament_id = $1 LIMIT 1',
+          [tournamentId]
+        );
+        if (!fixtureCheck.rows.length) {
+          throw this._badRequest('Generate or add tournament fixtures before starting the tournament');
         }
       }
 
@@ -554,6 +688,112 @@ class TournamentsService {
     } finally {
       client.release();
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // CO-ORGANIZER MANAGEMENT
+  // -------------------------------------------------------------------------
+  async assignCoOrganizer(tournamentId, requestingUser, { email, user_id }) {
+    const tournament = await this.getTournament(tournamentId, requestingUser);
+    const isAdmin = requestingUser.roles?.includes('ADMIN');
+    const isOwner = requestingUser.id === tournament.organizer_user_id;
+    if (!isAdmin && !isOwner) {
+      throw this._forbidden('Only the primary tournament organizer or an admin can assign a co-organizer');
+    }
+
+    let targetUser = null;
+    if (user_id) {
+      const uRes = await query('SELECT id, email FROM users WHERE id = $1', [user_id]);
+      targetUser = uRes.rows[0];
+    } else if (email) {
+      const uRes = await query('SELECT id, email FROM users WHERE LOWER(email) = LOWER($1)', [email.trim()]);
+      targetUser = uRes.rows[0];
+    } else {
+      throw this._badRequest('Email or user_id is required to assign a co-organizer');
+    }
+
+    if (!targetUser) {
+      throw this._notFound('User not found. They must have a PlaySphere account first.');
+    }
+
+    if (targetUser.id === tournament.organizer_user_id) {
+      throw this._badRequest('User is already the primary organizer of this tournament');
+    }
+
+    await query(
+      'UPDATE tournaments SET co_organizer_user_id = $1, updated_at = NOW() WHERE id = $2',
+      [targetUser.id, tournamentId]
+    );
+
+    // Also ensure co-organizer is an admin in the tournament community
+    const commRes = await query('SELECT id FROM communities WHERE tournament_id = $1', [tournamentId]);
+    if (commRes.rows[0]) {
+      await query(
+        `INSERT INTO community_members (community_id, user_id, role)
+         VALUES ($1, $2, 'admin')
+         ON CONFLICT (community_id, user_id) DO UPDATE SET role = 'admin'`,
+        [commRes.rows[0].id, targetUser.id]
+      );
+    }
+
+    return await this.getTournament(tournamentId, requestingUser);
+  }
+
+  async removeCoOrganizer(tournamentId, requestingUser) {
+    const tournament = await this.getTournament(tournamentId, requestingUser);
+    const isAdmin = requestingUser.roles?.includes('ADMIN');
+    const isOwner = requestingUser.id === tournament.organizer_user_id;
+    if (!isAdmin && !isOwner) {
+      throw this._forbidden('Only the primary tournament organizer or an admin can remove a co-organizer');
+    }
+
+    await query(
+      'UPDATE tournaments SET co_organizer_user_id = NULL, updated_at = NOW() WHERE id = $1',
+      [tournamentId]
+    );
+
+    return await this.getTournament(tournamentId, requestingUser);
+  }
+
+  // -------------------------------------------------------------------------
+  // COMMUNITY ANNOUNCEMENTS
+  // -------------------------------------------------------------------------
+  async postTournamentAnnouncement(tournamentId, requestingUser, { title, body }) {
+    if (!title || !title.trim()) throw this._badRequest('Title is required');
+    if (!body || !body.trim()) throw this._badRequest('Body is required');
+
+    const tournament = await this.getTournament(tournamentId, requestingUser);
+    const isAdmin = requestingUser.roles?.includes('ADMIN');
+    const canManage = isAdmin || requestingUser.id === tournament.organizer_user_id || requestingUser.id === tournament.co_organizer_user_id;
+    if (!canManage) {
+      throw this._forbidden('Only tournament organizers, co-organizers, or admins can post official announcements');
+    }
+
+    const commRes = await query(
+      'SELECT id FROM communities WHERE tournament_id = $1 AND is_active = TRUE LIMIT 1',
+      [tournamentId]
+    );
+    if (!commRes.rows[0]) {
+      throw this._notFound('No active community linked to this tournament');
+    }
+    const communityId = commRes.rows[0].id;
+
+    // Ensure member
+    await query(
+      `INSERT INTO community_members (community_id, user_id, role)
+       VALUES ($1, $2, 'admin')
+       ON CONFLICT (community_id, user_id) DO UPDATE SET role = 'admin'`,
+      [communityId, requestingUser.id]
+    );
+
+    const postRes = await query(
+      `INSERT INTO posts (community_id, author_user_id, title, body, category, is_pinned)
+       VALUES ($1, $2, $3, $4, 'event_announcement', TRUE)
+       RETURNING id, title, body, category, is_pinned, created_at`,
+      [communityId, requestingUser.id, title.trim(), body.trim()]
+    );
+
+    return postRes.rows[0];
   }
 }
 

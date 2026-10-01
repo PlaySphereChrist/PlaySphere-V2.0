@@ -98,7 +98,7 @@ export default function LoginPage() {
 
             <div className="text-sm text-center pt-2">
               <span className="text-secondary">Don&apos;t have an account? </span>
-              <Link to="/signup" className="font-medium text-maroon hover:underline">
+              <Link to="/signup" state={location.state} className="font-medium text-maroon hover:underline">
                 Sign up
               </Link>
             </div>

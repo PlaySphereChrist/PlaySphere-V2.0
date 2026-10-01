@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { api } from '../lib/api';
+import { useParams } from 'react-router-dom';
+import { searchUsers } from '../features/users/api';
+import {
+  getTeam,
+  getTeamMembers,
+  inviteUserToTeam,
+  removeTeamMember,
+  updateTeam,
+} from '../features/teams/api';
 import { useAuth } from '../store/AuthContext';
 import {
   PsButton,
@@ -11,7 +18,6 @@ import {
   PsAlert,
   PsPageHeader,
   PsLoading,
-  PsEmpty,
   PsBackButton,
 } from '../components/ui';
 
@@ -48,8 +54,8 @@ export default function TeamDetailsPage() {
       setError('');
       
       const [teamRes, membersRes] = await Promise.all([
-        api.get(`/teams/${teamId}`),
-        api.get(`/teams/${teamId}/members`)
+        getTeam(teamId),
+        getTeamMembers(teamId)
       ]);
 
       setTeam(teamRes.data.team);
@@ -79,7 +85,7 @@ export default function TeamDetailsPage() {
     const timer = window.setTimeout(async () => {
       setSearchLoading(true);
       try {
-        const res = await api.get(`/users/search?q=${encodeURIComponent(inviteSearchQuery)}`);
+        const res = await searchUsers(inviteSearchQuery);
         setSearchResults(res.data.users || []);
       } catch (err) {
         console.error(err);
@@ -90,14 +96,14 @@ export default function TeamDetailsPage() {
     return () => window.clearTimeout(timer);
   }, [inviteSearchQuery]);
 
-  const isManager = team?.manager_user_id === user?.id;
+  const isManager = Boolean(user && team?.is_manager);
 
   const handleUpdateTeam = async (e) => {
     e.preventDefault();
     setEditError('');
     setEditLoading(true);
     try {
-      const res = await api.patch(`/teams/${teamId}`, editData);
+      const res = await updateTeam(teamId, editData);
       setTeam(res.data.team);
       setIsEditing(false);
     } catch (err) {
@@ -111,8 +117,8 @@ export default function TeamDetailsPage() {
     if (!window.confirm('Are you sure you want to remove this member?')) return;
     
     try {
-      await api.delete(`/teams/${teamId}/members/${memberId}`);
-      const membersRes = await api.get(`/teams/${teamId}/members`);
+      await removeTeamMember(teamId, memberId);
+      const membersRes = await getTeamMembers(teamId);
       setMembers(membersRes.data.members || []);
     } catch (err) {
       window.alert(err.message || 'Failed to remove member.');
@@ -130,7 +136,7 @@ export default function TeamDetailsPage() {
 
     setInviteLoading(true);
     try {
-      await api.post(`/teams/${teamId}/invitations`, { 
+      await inviteUserToTeam(teamId, {
         invited_user_id: selectedUser.id, 
         message: inviteMessage.trim() 
       });

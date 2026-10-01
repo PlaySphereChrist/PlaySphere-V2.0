@@ -32,26 +32,26 @@ Browser (mobile / tablet / desktop)
 │  Middleware: CORS · Auth · Error Handler    │
 │                                             │
 │  Router                                     │
+│   ├── /api/uploads                          │
 │   ├── /api/health                           │
 │   ├── /api/auth                             │
 │   ├── /api/users                            │
 │   ├── /api/player-profiles                  │
 │   ├── /api/sports                           │
 │   ├── /api/teams                            │
+│   ├── /api/team-invitations                 │
 │   ├── /api/grounds                          │
-│   ├── /api/bookings                         │
+│   ├── /api/ground-bookings                  │
+│   ├── /api/payments                         │
 │   ├── /api/casual-games                     │
 │   ├── /api/tournaments                      │
 │   ├── /api/registrations                    │
-│   ├── /api/fixtures                         │
 │   ├── /api/matches                          │
-│   ├── /api/performance                      │
-│   ├── /api/stats                            │
+│   ├── /api/performance-events               │
+│   ├── /api/statistics                       │
 │   ├── /api/leaderboards                     │
-│   ├── /api/communities                      │
+│   ├── /api/community                        │
 │   ├── /api/notifications                    │
-│   ├── /api/payments                         │
-│   └── /api/audit-logs                       │
 │                                             │
 │  Module: routes → controller → service      │
 └──────────────────┬──────────────────────────┘
@@ -347,11 +347,11 @@ MODERATION_API_URL=
 
 ## Payment Flow (Razorpay)
 
-1. Client requests an **order** from the server (`POST /api/payments/create-order`).
-2. Server creates an order via Razorpay API and returns `order_id` + `key_id`.
-3. Client opens the Razorpay checkout widget.
-4. On success, client sends `payment_id`, `order_id`, `signature` to `POST /api/payments/verify`.
-5. Server verifies the HMAC signature and records the payment.
+1. Client requests an order at `POST /api/ground-bookings/:bookingId/payment/order`.
+2. The server uses the stored advance amount to create the Razorpay order and returns its ID and public key.
+3. Client opens Razorpay Checkout, then submits the returned payment ID, order ID, and signature to `POST /api/ground-bookings/:bookingId/payment/verify`.
+4. The server verifies the HMAC signature and fetches the payment from Razorpay. It confirms the booking only after the provider reports a captured payment whose order, amount, and currency match the stored payment.
+5. `payment.captured` and `order.paid` events are handled at `POST /api/payments/razorpay/webhook`; eligible booking refunds use `POST /api/ground-bookings/:bookingId/payment/refund`.
 
 ---
 

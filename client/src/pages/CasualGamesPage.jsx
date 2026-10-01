@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../lib/api';
+import { Search } from 'lucide-react';
+import { listCasualGames } from '../features/casual-games/api';
+import { getSports } from '../features/sports/api';
 import { useAuth } from '../store/AuthContext';
 import {
   PsButton,
@@ -8,10 +10,10 @@ import {
   PsSelect,
   PsInput,
   PsBadge,
-  PsAlert,
   PsPageHeader,
   PsLoading,
-  PsEmpty
+  PsEmpty,
+  PsErrorState
 } from '../components/ui';
 
 export default function CasualGamesPage() {
@@ -25,41 +27,67 @@ export default function CasualGamesPage() {
   const [status, setStatus] = useState('open');
   const [skillLevel, setSkillLevel] = useState('');
   const [date, setDate] = useState('');
+  const [appliedFilters, setAppliedFilters] = useState({ sportId: '', status: 'open', skillLevel: '', date: '' });
+  const [retryKey, setRetryKey] = useState(0);
 
   const { user } = useAuth();
 
   useEffect(() => {
     const fetchSports = async () => {
       try {
-        const res = await api.get('/sports');
-        setSports(res.data.sports);
+        const res = await getSports();
+        setSports(res.data.sports || []);
       } catch (err) {
         console.error('Failed to load sports', err);
       }
     };
+    fetchSports();
+  }, []);
 
+  useEffect(() => {
+    let active = true;
     const fetchGames = async () => {
       try {
         setLoading(true);
-        const params = new window.URLSearchParams();
-        if (sportId) params.append('sport_id', sportId);
-        if (status) params.append('status', status);
-        if (skillLevel) params.append('skill_level', skillLevel);
-        if (date) params.append('date', date);
-
-        const res = await api.get(`/casual-games?${params.toString()}`);
-        setGames(res.data.games);
         setError('');
+        const params = new window.URLSearchParams();
+        if (appliedFilters.sportId) params.append('sport_id', appliedFilters.sportId);
+        if (appliedFilters.status) params.append('status', appliedFilters.status);
+        if (appliedFilters.skillLevel) params.append('skill_level', appliedFilters.skillLevel);
+        if (appliedFilters.date) params.append('date', appliedFilters.date);
+
+        const res = await listCasualGames(params.toString());
+        if (active) setGames(res.data.games || []);
       } catch (err) {
-        setError(err.data?.error || err.message || 'Failed to load games');
+        if (active) setError(err.data?.error || err.message || 'Failed to load games');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
-    fetchSports();
     fetchGames();
-  }, [sportId, status, skillLevel, date]);
+    return () => { active = false; };
+  }, [appliedFilters, retryKey]);
+
+  const handleSearch = (event) => {
+    event.preventDefault();
+    setAppliedFilters({ sportId, status, skillLevel, date });
+  };
+
+  const clearFilters = () => {
+    setSportId('');
+    setStatus('');
+    setSkillLevel('');
+    setDate('');
+    setAppliedFilters({ sportId: '', status: '', skillLevel: '', date: '' });
+  };
+
+  const filtersChanged = sportId !== appliedFilters.sportId
+    || status !== appliedFilters.status
+    || skillLevel !== appliedFilters.skillLevel
+    || date !== appliedFilters.date;
+  const hasActiveFilters = Boolean(appliedFilters.sportId || appliedFilters.status || appliedFilters.skillLevel || appliedFilters.date);
+  const appliedSportName = sports.find((sport) => sport.id === appliedFilters.sportId)?.name;
 
   const getStatusVariant = (s) => {
     switch (s) {
@@ -86,13 +114,14 @@ export default function CasualGamesPage() {
         title="Casual Games" 
         subtitle="Find and join pickup games in your area."
         actions={
-          <Link to="/casual-games/create">
-            <PsButton>Create Game</PsButton>
+          <Link to={user ? '/casual-games/create' : '/login'} state={!user ? { from: '/casual-games' } : undefined}>
+            <PsButton>{user ? 'Create Game' : 'Sign in to host a game'}</PsButton>
           </Link>
         }
       />
 
       <PsCard className="p-4 bg-surface">
+        <form onSubmit={handleSearch}>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
           <PsSelect
             label="Sport"
@@ -136,24 +165,46 @@ export default function CasualGamesPage() {
             onChange={(e) => setDate(e.target.value)}
           />
         </div>
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+          {filtersChanged && <span className="mr-auto text-xs text-secondary" role="status">Filters changed. Search to update results.</span>}
+          <PsButton type="submit">
+            <span className="inline-flex items-center gap-2"><Search size={16} />Search</span>
+          </PsButton>
+          {hasActiveFilters || filtersChanged ? (
+            <PsButton type="button" variant="secondary" onClick={clearFilters}>Clear filters</PsButton>
+          ) : null}
+        </div>
+        </form>
       </PsCard>
 
-      {error && <PsAlert variant="error">{error}</PsAlert>}
+      {hasActiveFilters && (
+        <div className="flex flex-wrap items-center gap-2" role="status" aria-label="Applied casual game filters" aria-live="polite">
+          <span className="text-sm text-secondary">Applied filters:</span>
+          {appliedSportName && <PsBadge>{appliedSportName}</PsBadge>}
+          {appliedFilters.status && <PsBadge>{appliedFilters.status[0].toUpperCase() + appliedFilters.status.slice(1)}</PsBadge>}
+          {appliedFilters.skillLevel && <PsBadge>{appliedFilters.skillLevel}</PsBadge>}
+          {appliedFilters.date && <PsBadge>{new Date(`${appliedFilters.date}T00:00:00`).toLocaleDateString()}</PsBadge>}
+        </div>
+      )}
 
-      {loading ? (
+      {error ? (
+        <PsErrorState message={error} retry={() => setRetryKey((key) => key + 1)} />
+      ) : loading ? (
         <PsLoading />
       ) : games.length === 0 ? (
         <PsEmpty 
           title="No casual games found" 
           message="No casual games found matching your filters." 
           action={
-            <Link to="/casual-games/create">
-              <PsButton>Create Game</PsButton>
+            <Link to={user ? '/casual-games/create' : '/login'} state={!user ? { from: '/casual-games' } : undefined}>
+              <PsButton>{user ? 'Create Game' : 'Sign in to host a game'}</PsButton>
             </Link>
           }
         />
       ) : (
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <section aria-label={`${games.length} casual games`}>
+          <p className="mb-3 text-sm text-secondary" aria-live="polite">Showing {games.length} {games.length === 1 ? 'casual game' : 'casual games'}</p>
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {games.map(game => (
             <PsCard key={game.id} className="flex flex-col hover:border-maroon/50 transition">
               <div className="p-6 flex-grow">
@@ -173,6 +224,12 @@ export default function CasualGamesPage() {
                     <span className="text-muted">📅</span>
                     {new Date(game.scheduled_at).toLocaleDateString()} at {new Date(game.scheduled_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                   </p>
+                  {game.ground_name && (
+                    <p className="flex items-center gap-2">
+                      <span className="text-muted">🏟️</span>
+                      <span className="truncate font-medium text-primary">{game.ground_name}</span>
+                    </p>
+                  )}
                   <p className="flex items-center gap-2">
                     <span className="text-muted">📍</span>
                     <span className="truncate">{game.location_name}</span>
@@ -205,7 +262,8 @@ export default function CasualGamesPage() {
               </div>
             </PsCard>
           ))}
-        </div>
+          </div>
+        </section>
       )}
     </div>
   );

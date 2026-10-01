@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../../lib/api';
+import { cancelTournamentRegistration, getMyRegistrations } from '../../features/tournaments/api';
 import {
   PsButton,
   PsCard,
@@ -19,7 +19,7 @@ export default function MyRegistrationsPage() {
   const loadRegistrations = async () => {
     try {
       setLoading(true);
-      const res = await api.get('/registrations');
+      const res = await getMyRegistrations();
       setRegistrations(res.data.registrations || []);
     } catch (err) {
       setError(err.message || 'Failed to load registrations');
@@ -35,7 +35,7 @@ export default function MyRegistrationsPage() {
   const handleCancel = async (tournamentId, registrationId) => {
     if (!window.confirm('Are you sure you want to cancel this registration?')) return;
     try {
-      await api.delete(`/tournaments/${tournamentId}/registrations/${registrationId}`);
+      await cancelTournamentRegistration(tournamentId, registrationId);
       await loadRegistrations(); // refresh
     } catch (err) {
       window.alert(err.message || 'Cancellation failed');

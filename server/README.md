@@ -24,9 +24,13 @@ This is the Node.js + Express backend for PlaySphere.
 | `DB_NAME` | PostgreSQL database name |
 | `DB_USER` | PostgreSQL user |
 | `DB_PASSWORD` | PostgreSQL password |
+| `DATABASE_URL` | Optional PostgreSQL connection string; when set, it takes precedence over `DB_*` |
 | `CLIENT_URL` | Frontend origin for CORS (e.g. `http://localhost:5173`) |
 | `JWT_ACCESS_SECRET` | **Required.** Secret for signing JWT access tokens |
 | `JWT_REFRESH_SECRET` | **Required.** Secret for signing JWT refresh tokens |
+| `RAZORPAY_KEY_ID` | Optional Razorpay key ID, required to start payment flows |
+| `RAZORPAY_KEY_SECRET` | Optional Razorpay key secret, required to start payment flows |
+| `RAZORPAY_WEBHOOK_SECRET` | Optional webhook signature secret, required to accept Razorpay webhooks |
 
 > The server will **exit immediately at startup** if `JWT_ACCESS_SECRET` or `JWT_REFRESH_SECRET` are missing.
 > Never use the same secret for access and refresh tokens.
@@ -38,7 +42,7 @@ This is the Node.js + Express backend for PlaySphere.
 
 ### 1. Configure Environment
 
-Copy `.env.example` from the project root and create `server/.env`:
+Copy `.env.example` from the project root to `server/.env`, then fill in the local values. The project-root `.env` is also supported; if both files exist, values in the project-root file take precedence.
 
 ```dotenv
 NODE_ENV=development
@@ -68,6 +72,10 @@ npm run dev
 
 Nodemon will automatically restart the server on file changes.
 
+The server also starts an expiry cleanup worker. It removes expired unbooked
+ground slots and casual games after their scheduled duration, catches up after
+server restarts, and keeps booked slots or games with match history for records.
+
 ### 4. Test Connectivity
 
 ```bash
@@ -93,7 +101,7 @@ All authentication endpoints are available under `/api/auth`.
 | Method | Path | Auth Required | Description |
 |---|---|---|---|
 | `POST` | `/api/auth/register` | No | Register a new USER account (public) |
-| `POST` | `/api/auth/login` | No | Login for all roles (USER, TEAM_MANAGER, ORGANIZER, ADMIN) |
+| `POST` | `/api/auth/login` | No | Login for USER, ORGANIZER, and ADMIN accounts |
 | `POST` | `/api/auth/refresh` | No | Rotate refresh token, receive new access + refresh tokens |
 | `POST` | `/api/auth/logout` | No | Revoke refresh token server-side |
 | `GET` | `/api/auth/me` | Yes (Bearer) | Get current authenticated user with roles |

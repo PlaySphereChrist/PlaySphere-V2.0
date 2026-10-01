@@ -2,6 +2,7 @@ const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const { pool, query } = require('../../config/database');
 const env = require('../../config/env');
+const { assertProviderPaymentMatches } = require('./payment-validation');
 
 // ---------------------------------------------------------------------------
 // Lazily initialise the Razorpay instance — only fails at call time when
@@ -47,7 +48,7 @@ class RazorpayPaymentService {
 
     if (entityType === 'ground_booking') {
       queryStr = `
-        SELECT p.id, p.amount, p.currency, p.status, p.payment_type,
+        SELECT p.id, p.user_id, p.amount, p.currency, p.status, p.payment_type,
                p.razorpay_order_id, p.razorpay_payment_id,
                gb.booked_by_user_id AS owner_user_id, gb.status AS entity_status
         FROM payments p
@@ -60,7 +61,7 @@ class RazorpayPaymentService {
       `;
     } else if (entityType === 'tournament_registration') {
       queryStr = `
-        SELECT p.id, p.amount, p.currency, p.status, p.payment_type,
+        SELECT p.id, p.user_id, p.amount, p.currency, p.status, p.payment_type,
                p.razorpay_order_id, p.razorpay_payment_id,
                tr.registered_by_user_id AS owner_user_id, tr.status AS entity_status
         FROM payments p
@@ -195,7 +196,7 @@ class RazorpayPaymentService {
 
     // Idempotency: if already captured with this payment ID, return success
     if (payment.status === 'captured' && payment.razorpay_payment_id === razorpay_payment_id) {
-      return { verified: true, already_processed: true };
+      return { verified: true, captured: true, status: 'captured', already_processed: true };
     }
 
     if (['captured', 'refunded', 'partially_refunded'].includes(payment.status)) {
@@ -232,79 +233,116 @@ class RazorpayPaymentService {
     }
 
     if (!signaturesMatch) {
-      // Mark payment as failed on invalid signature
-      await query(
-        `UPDATE payments SET status = 'failed' WHERE id = $1`,
-        [payment.id]
-      );
+      // An invalid client response does not prove that the provider payment
+      // failed, so leave the stored payment state untouched.
       const err = new Error('Payment signature verification failed');
       err.statusCode = 400;
       throw err;
     }
 
+    // A valid Checkout signature authenticates the response, but it does not
+    // prove that Razorpay has captured the funds. Fetch the payment from the
+    // server-side API and compare it with the amount, currency, order, and ID
+    // stored for this entity before changing its state.
+    let providerPayment;
+    try {
+      providerPayment = await getRazorpay().payments.fetch(razorpay_payment_id);
+    } catch (rzpErr) {
+      const msg = rzpErr.error?.description || rzpErr.message || 'Unable to confirm payment status with Razorpay';
+      const err = new Error(msg);
+      err.statusCode = 502;
+      throw err;
+    }
+
+    assertProviderPaymentMatches(
+      payment,
+      providerPayment,
+      payment.razorpay_order_id,
+      razorpay_payment_id
+    );
+
+    if (providerPayment.status === 'authorized') {
+      const updateRes = await query(
+        `UPDATE payments
+         SET status = 'authorized',
+             razorpay_payment_id = $1,
+             razorpay_signature = $2
+         WHERE id = $3 AND status NOT IN ('captured', 'refunded', 'partially_refunded')
+         RETURNING status`,
+        [razorpay_payment_id, razorpay_signature, payment.id]
+      );
+      const currentStatus = updateRes.rows[0]?.status ||
+        (await query('SELECT status FROM payments WHERE id = $1', [payment.id])).rows[0]?.status;
+
+      if (currentStatus === 'captured') {
+        return { verified: true, captured: true, status: 'captured', already_processed: true };
+      }
+      if (currentStatus !== 'authorized') {
+        throw this._conflict('This payment has already been processed');
+      }
+      return { verified: true, captured: false, status: 'authorized', already_processed: false };
+    }
+
+    if (providerPayment.status !== 'captured') {
+      throw this._conflict(`Razorpay has not captured this payment (status: ${providerPayment.status || 'unknown'})`);
+    }
+
     // Signature is valid — update payment and booking inside a transaction
     const client = await pool.connect();
+    let alreadyProcessed = false;
     try {
       await client.query('BEGIN');
 
-      // Update payment record
-      await client.query(
-        `UPDATE payments
-         SET status = 'captured',
-             razorpay_payment_id = $1,
-             razorpay_signature = $2,
-             paid_at = NOW()
-         WHERE id = $3`,
-        [razorpay_payment_id, razorpay_signature, payment.id]
+      const currentPaymentRes = await client.query(
+        `SELECT status, razorpay_payment_id
+         FROM payments
+         WHERE id = $1
+         FOR UPDATE`,
+        [payment.id]
       );
+      const currentPayment = currentPaymentRes.rows[0];
+      if (!currentPayment) throw this._notFound('Payment record not found');
 
-      // Update appropriate entity
-      if (entityType === 'ground_booking') {
+      if (currentPayment.status === 'captured') {
+        if (currentPayment.razorpay_payment_id !== razorpay_payment_id) {
+          throw this._conflict('A different payment has already been captured for this entity');
+        }
+        alreadyProcessed = true;
+      } else if (['refunded', 'partially_refunded'].includes(currentPayment.status)) {
+        throw this._conflict('This payment has already been processed');
+      }
+
+      if (!alreadyProcessed) {
+        // Update payment record
         await client.query(
-          `UPDATE ground_bookings
-           SET status = 'confirmed', advance_paid_at = NOW()
-           WHERE id = $1 AND status IN ('pending', 'confirmed')`,
-          [entityId]
+          `UPDATE payments
+           SET status = 'captured',
+               razorpay_payment_id = $1,
+               razorpay_signature = $2,
+               paid_at = COALESCE(paid_at, NOW())
+           WHERE id = $3`,
+          [razorpay_payment_id, razorpay_signature, payment.id]
         );
-      } else if (entityType === 'tournament_registration') {
-        await client.query(
-          `UPDATE tournament_registrations
-           SET status = 'approved'
-           WHERE id = $1 AND status = 'pending'`,
-          [entityId]
-        );
+
+        // Update appropriate entity
+        if (entityType === 'ground_booking') {
+          await client.query(
+            `UPDATE ground_bookings
+             SET status = 'confirmed', advance_paid_at = COALESCE(advance_paid_at, NOW())
+             WHERE id = $1 AND status IN ('pending', 'confirmed')`,
+            [entityId]
+          );
+        } else if (entityType === 'tournament_registration') {
+          await client.query(
+            `UPDATE tournament_registrations
+             SET status = 'approved'
+             WHERE id = $1 AND status = 'pending'`,
+            [entityId]
+          );
+        }
       }
 
       await client.query('COMMIT');
-
-      // Audit and notify
-      const auditService = require('../audit-logs/audit.service');
-      const notificationService = require('../notifications/notification.service');
-
-      auditService.log({
-        actor_user_id: userId,
-        action: 'payment_verified',
-        entity_type: 'payment',
-        entity_id: payment.id,
-        new_state: { status: 'captured', razorpay_payment_id }
-      });
-
-      notificationService.notifyUser({
-        userId: payment.user_id,
-        type: 'payment_confirmed',
-        title: 'Payment Successful',
-        body: `Payment of ₹${payment.amount} was successful.`,
-        entityType: 'payment',
-        entityId: payment.id,
-        emailTemplate: 'payment_confirmation',
-        emailData: {
-          amount: payment.amount,
-          entity_type: entityType,
-          entity_id: entityId,
-          payment_id: payment.id
-        }
-      });
-
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -312,7 +350,39 @@ class RazorpayPaymentService {
       client.release();
     }
 
-    return { verified: true, already_processed: false };
+    if (alreadyProcessed) {
+      return { verified: true, captured: true, status: 'captured', already_processed: true };
+    }
+
+    // Audit and notify after the transaction commits.
+    const auditService = require('../audit-logs/audit.service');
+    const notificationService = require('../notifications/notification.service');
+
+    auditService.log({
+      actor_user_id: userId,
+      action: 'payment_verified',
+      entity_type: 'payment',
+      entity_id: payment.id,
+      new_state: { status: 'captured', razorpay_payment_id }
+    });
+
+    notificationService.notifyUser({
+      userId: payment.user_id,
+      type: 'payment_confirmed',
+      title: 'Payment Successful',
+      body: `Payment of ₹${payment.amount} was successful.`,
+      entityType: 'payment',
+      entityId: payment.id,
+      emailTemplate: 'payment_confirmation',
+      emailData: {
+        amount: payment.amount,
+        entity_type: entityType,
+        entity_id: entityId,
+        payment_id: payment.id
+      }
+    });
+
+    return { verified: true, captured: true, status: 'captured', already_processed: false };
   }
 
   // ===========================================================================
@@ -338,7 +408,7 @@ class RazorpayPaymentService {
 
       // Load and lock the payment
       const paymentRes = await client.query(
-        `SELECT p.id, p.amount, p.razorpay_payment_id, p.status as payment_status,
+        `SELECT p.id, p.user_id, p.entity_id, p.amount, p.razorpay_payment_id, p.status as payment_status,
                 gb.booked_by_user_id, gb.status as booking_status
          FROM payments p
          JOIN ground_bookings gb ON gb.id = p.entity_id
@@ -375,7 +445,7 @@ class RazorpayPaymentService {
 
       // Load and lock the pending refund record
       const refundRes = await client.query(
-        `SELECT id, amount, status, razorpay_refund_id
+        `SELECT id, amount, reason, status, razorpay_refund_id
          FROM refunds
          WHERE payment_id = $1
          ORDER BY created_at DESC
@@ -521,16 +591,25 @@ class RazorpayPaymentService {
 
     if (eventName === 'payment.captured' || eventName === 'order.paid') {
       const dataPayload = payload?.payload || {};
-      const paymentEntity = dataPayload?.payment?.entity || dataPayload?.order?.entity;
+      let paymentEntity = dataPayload?.payment?.entity;
+      const orderEntity = dataPayload?.order?.entity;
+
+      if (!paymentEntity && eventName === 'order.paid' && orderEntity?.id) {
+        const paymentCollection = await getRazorpay().orders.fetchPayments(orderEntity.id);
+        paymentEntity = paymentCollection.items?.find((item) => item.status === 'captured');
+      }
       if (!paymentEntity) return;
 
       const rzpPaymentId = paymentEntity.id;
-      const rzpOrderId = paymentEntity.order_id;
-      if (!rzpOrderId) return;
+      const rzpOrderId = paymentEntity.order_id || orderEntity?.id;
+      if (!rzpOrderId || !rzpPaymentId) return;
 
       // Find our payment record by razorpay_order_id
       const { rows } = await query(
-        `SELECT id, entity_id, entity_type, status FROM payments WHERE razorpay_order_id = $1`,
+        `SELECT id, user_id, entity_id, entity_type, amount, currency, status,
+                razorpay_payment_id
+         FROM payments
+         WHERE razorpay_order_id = $1`,
         [rzpOrderId]
       );
 
@@ -538,21 +617,51 @@ class RazorpayPaymentService {
 
       const payment = rows[0];
 
+      if (paymentEntity.status && paymentEntity.status !== 'captured') return;
+      assertProviderPaymentMatches(payment, paymentEntity, rzpOrderId, rzpPaymentId);
+
       // Idempotent: already captured
       if (payment.status === 'captured') return;
 
       const client = await pool.connect();
+      let newlyCaptured = false;
       try {
         await client.query('BEGIN');
+
+        const currentPaymentRes = await client.query(
+          `SELECT status, razorpay_payment_id
+           FROM payments
+           WHERE id = $1
+           FOR UPDATE`,
+          [payment.id]
+        );
+        const currentPayment = currentPaymentRes.rows[0];
+
+        if (!currentPayment) {
+          await client.query('COMMIT');
+          return;
+        }
+        if (currentPayment.status === 'captured') {
+          if (currentPayment.razorpay_payment_id !== rzpPaymentId) {
+            throw this._conflict('A different payment has already been captured for this order');
+          }
+          await client.query('COMMIT');
+          return;
+        }
+        if (['refunded', 'partially_refunded'].includes(currentPayment.status)) {
+          await client.query('COMMIT');
+          return;
+        }
 
         await client.query(
           `UPDATE payments
            SET status = 'captured',
-               razorpay_payment_id = COALESCE(razorpay_payment_id, $1),
+               razorpay_payment_id = $1,
                paid_at = COALESCE(paid_at, NOW())
-           WHERE id = $2 AND status NOT IN ('captured', 'refunded', 'partially_refunded')`,
+           WHERE id = $2`,
           [rzpPaymentId, payment.id]
         );
+        newlyCaptured = true;
 
         if (payment.entity_type === 'ground_booking') {
           // Confirm the booking
@@ -580,6 +689,25 @@ class RazorpayPaymentService {
         client.release();
       }
 
+      if (newlyCaptured) {
+        const notificationService = require('../notifications/notification.service');
+        notificationService.notifyUser({
+          userId: payment.user_id,
+          type: 'payment_confirmed',
+          title: 'Payment Successful',
+          body: `Payment of ₹${payment.amount} was successful.`,
+          entityType: 'payment',
+          entityId: payment.id,
+          emailTemplate: 'payment_confirmation',
+          emailData: {
+            amount: payment.amount,
+            entity_type: payment.entity_type,
+            entity_id: payment.entity_id,
+            payment_id: payment.id
+          }
+        });
+      }
+
     } else if (eventName === 'payment.failed') {
       const dataPayload = payload?.payload || {};
       const paymentEntity = dataPayload?.payment?.entity;
@@ -601,7 +729,7 @@ class RazorpayPaymentService {
       );
 
     } else if (eventName === 'payment.authorized') {
-      const paymentEntity = payload?.payment?.entity;
+      const paymentEntity = payload?.payload?.payment?.entity;
       if (!paymentEntity?.order_id) return;
 
       const { rows } = await query(

@@ -2,7 +2,7 @@
 
 ## Engine
 
-**PostgreSQL 18** (local machine only)  
+**PostgreSQL 15 or newer** (local machine only)
 Driver used by the application: `pg` (node-postgres) — no ORM, no query builder.
 
 ---
@@ -12,30 +12,38 @@ Driver used by the application: `pg` (node-postgres) — no ORM, no query builde
 ```
 database/
 ├── schema/
-│   └── 001_initial_schema.sql     ← Full normalized schema (run once on a fresh DB)
+│   ├── 001_initial_schema.sql     ← Base schema
+│   └── 002–007_*.sql              ← Additive updates, apply in order
 ├── seeds/
-│   └── 001_roles_and_development_users.sql  ← Roles, sports, dev accounts
+│   ├── 001_roles_and_development_users.sql  ← Roles, sports, dev accounts
+│   ├── 002_grounds_seed.sql       ← Optional local ground fixtures
+│   ├── 003_demo_teams_and_tournaments.sql  ← Optional organizer demo data
+│   ├── 004_demo_artwork_backfill.sql  ← Fill missing ground images safely
+│   ├── 005_demo_players_teams_registrations.sql ← Player accounts and enrolled teams
+│   ├── 006_demo_completed_tournaments.sql ← Historical fixtures, scorecards, and player events
+│   └── 007_demo_tournament_expansion.sql ← Four-team records and sport statistic catalog
 └── migrations/
-    └── (future incremental change files go here)
+    ├── 0001_tournament_fixture_engine.sql  ← Fixture metadata and automatic byes
+    └── 0002_sport_specific_ground_slots.sql ← Per-sport slot identity
 ```
 
 | Folder | Purpose |
 |---|---|
-| `schema/` | Canonical full-schema files. Run once against a blank database. |
-| `seeds/` | Reference / development data. Safe to re-run (uses ON CONFLICT DO NOTHING). |
-| `migrations/` | Future incremental changes (ALTER TABLE, new tables, etc.). Not yet used. |
+| `schema/` | Base schema and the ordered additive updates needed by the current app. Apply once to a blank database. |
+| `seeds/` | Reference and development data. Apply `001` first; `002` adds grounds; `003` adds tournaments; `004` backfills ground images; `005` adds demo players, team rosters, and approved tournament registrations. |
+| `migrations/` | Ordered incremental changes. New changes belong here rather than in the locked base schema. |
 
 ---
 
 ## Prerequisites
 
-- PostgreSQL 18 installed and running locally.
+- PostgreSQL 15 or newer installed and running locally.
 - `psql` available on your PATH (or use full path to `psql.exe`).
 - A PostgreSQL superuser or a user with CREATEDB privileges.
 
-On Windows the default installation puts `psql.exe` at:
+On Windows, `psql.exe` is usually under the `bin` folder for the installed PostgreSQL version, for example:
 ```
-C:\Program Files\PostgreSQL\18\bin\psql.exe
+C:\Program Files\PostgreSQL\15\bin\psql.exe
 ```
 
 Add that directory to your `PATH` for convenience, or invoke `psql` via its full path.
@@ -60,15 +68,27 @@ CREATE DATABASE playsphere;
 
 ## Step 2 — Apply the Schema
 
-Run the schema file against the new database.  
-This creates all tables, types, triggers, functions, and indexes.
+Run the base schema, then each additive schema update in numeric order. This creates the current tables, types, triggers, functions, and indexes.
 
 ```bash
 psql -U postgres -d playsphere -f database/schema/001_initial_schema.sql
+psql -U postgres -d playsphere -f database/schema/002_casual_games_schema_update.sql
+psql -U postgres -d playsphere -f database/schema/003_eligibility_decoupling_update.sql
+psql -U postgres -d playsphere -f database/schema/004_community_schema.sql
+psql -U postgres -d playsphere -f database/schema/005_tournament_community.sql
+psql -U postgres -d playsphere -f database/schema/006_tournament_community_unique.sql
+psql -U postgres -d playsphere -f database/schema/007_post_reactions.sql
 ```
 
-> **Run only once** on a clean database. Running it a second time will fail
-> because the tables already exist. Use migration files for future changes.
+> Apply this sequence only once to a clean database. Some additive updates are
+> not idempotent. Put future incremental changes in `database/migrations/`.
+
+Apply the fixture engine migration after the schema updates:
+
+```bash
+psql -U postgres -d playsphere -f database/migrations/0001_tournament_fixture_engine.sql
+psql -U postgres -d playsphere -f database/migrations/0002_sport_specific_ground_slots.sql
+```
 
 ---
 
@@ -83,6 +103,73 @@ psql -U postgres -d playsphere -f database/seeds/001_roles_and_development_users
 
 The seed is wrapped in a transaction and uses `ON CONFLICT DO NOTHING`,
 so it is safe to run again without duplicating data.
+
+Optional local venue data can be added after the development accounts exist:
+
+```bash
+psql -U postgres -d playsphere -f database/seeds/002_grounds_seed.sql
+```
+
+To add sample teams and five public demo tournaments, apply:
+
+```bash
+psql -U postgres -d playsphere -f database/seeds/003_demo_teams_and_tournaments.sql
+```
+
+Alternatively, from `server/`, run `npm run seed:demo`. The script applies the
+ground artwork backfill, demo player/team registrations, and five upcoming
+demo tournaments with four approved teams each. It also seeds three completed
+historical tournaments with four enrolled teams each, six round-robin matches,
+scorecards, performance events, player/team statistics, and leaderboards. The
+trackable stat catalog covers football, cricket, basketball, volleyball, and
+badminton. It refuses to write to a database outside local `playsphere`.
+
+The completed examples are available in
+`database/seeds/006_demo_completed_tournaments.sql` and expanded by
+`database/seeds/007_demo_tournament_expansion.sql`. Use `npm run seed:demo` to
+apply them and rebuild their statistics and leaderboard entries through the
+app's normal aggregation services.
+
+To create the enrolled sample teams and player accounts manually, apply:
+
+```bash
+psql -U postgres -d playsphere -f database/seeds/005_demo_players_teams_registrations.sql
+```
+
+This seed creates 46 local player accounts and ten teams, with two approved
+team registrations in each of the five upcoming demo tournaments. The
+tournament expansion adds rostered teams and accounts so every upcoming and
+historical demo tournament has four entries. All sample players use
+`PlayerDev@123`; the accounts are for local development only.
+
+To rebuild booking availability for the next 30 days, run from `server/`:
+
+```bash
+npm run refresh:ground-slots
+```
+
+This removes unbooked slot inventory before rebuilding it from active ground
+and sport availability. Prices use the ground/sport rate, playing surface,
+time of day, and weekend demand. Slots tied to bookings stay in place to
+preserve booking and payment history. Expired casual games without match
+history are removed as part of the refresh.
+
+While the API server is running, its background cleanup service also removes
+unbooked slots as soon as their end time passes and casual games when their
+scheduled duration ends. It catches up on expired records at server startup.
+
+If the grounds are already in your database, apply the artwork backfill without
+rerunning the ground seed:
+
+```bash
+psql -U postgres -d playsphere -f database/seeds/004_demo_artwork_backfill.sql
+```
+
+The demo seeds expect the organizer development account and sports from seed
+`001`. Seed `003` creates organizer-managed teams and tournaments; seed `005`
+adds separate player-managed teams and approved registrations. Ground images
+and tournament posters are stored under `client/public/images/demo/`; rerun
+`node server/scripts/generate_demo_assets.js` to regenerate the SVG placeholders.
 
 ---
 
@@ -139,7 +226,7 @@ psql -U postgres -d playsphere
 ```
 
 ```sql
--- Table count (expect 45 tables)
+-- Table count (expect 46 tables after schema updates 002–007)
 SELECT COUNT(*) FROM information_schema.tables
 WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
 
@@ -213,8 +300,8 @@ DB_USER=postgres
 DB_PASSWORD=your_local_postgres_password
 ```
 
-The server creates a connection pool via `pg.Pool` in `server/src/config/db.js`
-(implemented in a later phase).
+The server creates a connection pool via `pg.Pool` in `server/src/config/database.js`.
+The application accepts either `DATABASE_URL` or the individual `DB_*` values.
 
 ---
 
@@ -226,5 +313,14 @@ To start fresh:
 psql -U postgres -c "DROP DATABASE IF EXISTS playsphere;"
 psql -U postgres -c "CREATE DATABASE playsphere;"
 psql -U postgres -d playsphere -f database/schema/001_initial_schema.sql
+psql -U postgres -d playsphere -f database/schema/002_casual_games_schema_update.sql
+psql -U postgres -d playsphere -f database/schema/003_eligibility_decoupling_update.sql
+psql -U postgres -d playsphere -f database/schema/004_community_schema.sql
+psql -U postgres -d playsphere -f database/schema/005_tournament_community.sql
+psql -U postgres -d playsphere -f database/schema/006_tournament_community_unique.sql
+psql -U postgres -d playsphere -f database/schema/007_post_reactions.sql
+psql -U postgres -d playsphere -f database/migrations/0001_tournament_fixture_engine.sql
+psql -U postgres -d playsphere -f database/migrations/0002_sport_specific_ground_slots.sql
 psql -U postgres -d playsphere -f database/seeds/001_roles_and_development_users.sql
+psql -U postgres -d playsphere -f database/seeds/002_grounds_seed.sql
 ```

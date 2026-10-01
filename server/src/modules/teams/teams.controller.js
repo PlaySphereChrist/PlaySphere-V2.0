@@ -14,11 +14,18 @@ class TeamsController {
     });
   }
 
+  async getPublicTeams(req, res) {
+    const teams = await teamsService.getPublicTeams(req.user?.id || null);
+    res.json({ success: true, data: { teams } });
+  }
+
   async getTeamById(req, res) {
     const team = await teamsService.getTeamById(req.params.teamId);
     if (!team) {
       return res.status(404).json({ success: false, message: 'Team not found' });
     }
+    team.is_manager = Boolean(req.user && team.manager_user_id === req.user.id);
+    delete team.manager_user_id;
     res.json({
       success: true,
       data: { team }
@@ -68,7 +75,7 @@ class TeamsController {
       return res.status(404).json({ success: false, message: 'Team not found' });
     }
 
-    const members = await teamsService.getTeamMembers(req.params.teamId);
+    const members = await teamsService.getTeamMembers(req.params.teamId, req.user);
     res.json({
       success: true,
       data: { members }

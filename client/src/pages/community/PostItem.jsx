@@ -1,11 +1,18 @@
 import React, { useState } from 'react';
-import { api } from '../../lib/api';
+import { Link, useLocation } from 'react-router-dom';
+import {
+  archiveCommunityPost,
+  editCommunityPost,
+  reactToCommunityPost,
+} from '../../features/communities/api';
 import CommentSection from './CommentSection';
 import ReportModal from './ReportModal';
 import ModerateModal from './ModerateModal';
 import { PsCard, PsButton, PsBadge, PsInput, PsTextarea } from '../../components/ui';
 
 export default function PostItem({ post, currentUser, isMember, onUpdate }) {
+  const location = useLocation();
+  const returnTo = `${location.pathname}${location.search}`;
   const [showComments, setShowComments] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(post.title);
@@ -21,7 +28,7 @@ export default function PostItem({ post, currentUser, isMember, onUpdate }) {
   const handleArchive = async () => {
     if (!window.confirm('Are you sure you want to delete this post?')) return;
     try {
-      const res = await api.request('POST', `/community/posts/${post.id}/archive`);
+      const res = await archiveCommunityPost(post.id);
       if (res.success) {
         onUpdate();
       } else {
@@ -38,7 +45,7 @@ export default function PostItem({ post, currentUser, isMember, onUpdate }) {
       return;
     }
     try {
-      const res = await api.request('POST', `/community/posts/${post.id}/react`, { reaction: reactionType });
+      const res = await reactToCommunityPost(post.id, reactionType);
       if (res.success) {
         onUpdate(); // refresh post data
       } else {
@@ -54,11 +61,7 @@ export default function PostItem({ post, currentUser, isMember, onUpdate }) {
     if (!editTitle.trim() || !editBody.trim()) return;
     setSubmitting(true);
     try {
-      const endpoint = post.category === 'equipment_request'
-        ? `/community/equipment-requests/${post.id}`
-        : `/community/posts/${post.id}`;
-
-      const res = await api.request('PATCH', endpoint, { title: editTitle, body: editBody });
+      const res = await editCommunityPost(post, { title: editTitle, body: editBody });
       if (res.success) {
         setEditing(false);
         onUpdate();
@@ -103,7 +106,7 @@ export default function PostItem({ post, currentUser, isMember, onUpdate }) {
               <div>
                 <h4 className="text-lg font-serif font-bold text-primary">{post.title}</h4>
                 <div className="text-xs text-secondary mt-1 flex flex-wrap items-center gap-2">
-                  <span className="font-bold">{post.author_email}</span>
+                  <span className="font-bold">{post.author_name || 'Community member'}</span>
                   <span className="text-muted">•</span>
                   <span>{new Date(post.created_at).toLocaleString()}</span>
                   {post.category !== 'general' && post.category !== 'equipment_request' && (
@@ -140,13 +143,19 @@ export default function PostItem({ post, currentUser, isMember, onUpdate }) {
             </div>
 
             <div className="mt-4 pt-3 border-t border-border flex items-center gap-6">
-              <button
-                onClick={() => handleReact('like')}
-                className={`text-sm transition flex items-center gap-2 font-medium ${post.user_reaction === 'like' ? 'text-maroon' : 'text-secondary hover:text-maroon'}`}
-              >
-                <span>{post.user_reaction === 'like' ? '❤️' : '🤍'}</span> 
-                {post.reactions?.find(r => r.type === 'like')?.count || 0} Likes
-              </button>
+              {currentUser ? (
+                <button
+                  onClick={() => handleReact('like')}
+                  className={`text-sm transition flex items-center gap-2 font-medium ${post.user_reaction === 'like' ? 'text-maroon' : 'text-secondary hover:text-maroon'}`}
+                >
+                  <span>{post.user_reaction === 'like' ? '❤️' : '🤍'}</span>
+                  {post.reactions?.find(r => r.type === 'like')?.count || 0} Likes
+                </button>
+              ) : (
+                <Link to="/login" state={{ from: returnTo }} className="text-sm text-secondary hover:text-maroon font-medium">
+                  🤍 {post.reactions?.find(r => r.type === 'like')?.count || 0} Likes · sign in to react
+                </Link>
+              )}
               
               <button
                 onClick={() => setShowComments(!showComments)}

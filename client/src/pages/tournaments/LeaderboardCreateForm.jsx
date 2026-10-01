@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { api } from '../../lib/api';
+import { createLeaderboard } from '../../features/leaderboards/api';
+import { getSportStatDefinitions } from '../../features/sports/api';
 import {
   PsButton,
   PsInput,
@@ -24,7 +25,7 @@ export default function LeaderboardCreateForm({ tournament, onCreated, onCancel 
     const load = async () => {
       try {
         setDefsLoading(true);
-        const res = await api.get(`/sports/${tournament.sport_id}/stat-definitions`);
+        const res = await getSportStatDefinitions(tournament.sport_id);
         setStatDefs(res.data?.statDefinitions || []);
       } catch (err) {
         setDefsError('Could not load stat definitions: ' + (err.message || ''));
@@ -64,7 +65,7 @@ export default function LeaderboardCreateForm({ tournament, onCreated, onCancel 
     setSubmitError('');
 
     try {
-      const res = await api.post('/leaderboards', {
+      const res = await createLeaderboard({
         tournamentId: tournament.id,
         sport_id: tournament.sport_id,
         stat_key: statKey,
